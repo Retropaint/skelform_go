@@ -1,4 +1,4 @@
-package skelform
+package skelform_go
 
 import (
 	"archive/zip"
