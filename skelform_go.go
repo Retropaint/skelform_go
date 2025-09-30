@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"io/ioutil"
 	"math"
+	"slices"
 	"strconv"
 )
 
@@ -16,12 +17,41 @@ type Vec2 struct {
 	Y float32
 }
 
-func (v1 Vec2) add(v2 Vec2) Vec2 {
-	return Vec2{X: v1.X + v2.X, Y: v1.Y + v2.Y}
+func (v1 Vec2) Add(v2 Vec2) Vec2 {
+	return Vec2{
+		X: v1.X + v2.X,
+		Y: v1.Y + v2.Y,
+	}
 }
 
-func (v1 Vec2) mul(v2 Vec2) Vec2 {
-	return Vec2{X: v1.X * v2.X, Y: v1.Y * v2.Y}
+func (v1 Vec2) Sub(v2 Vec2) Vec2 {
+	return Vec2{
+		X: v1.X - v2.X,
+		Y: v1.Y - v2.Y,
+	}
+}
+
+func (v1 Vec2) Mul(v2 Vec2) Vec2 {
+	return Vec2{
+		X: v1.X * v2.X,
+		Y: v1.Y * v2.Y,
+	}
+}
+
+func (v1 Vec2) Mulf(f float32) Vec2 {
+	return Vec2{
+		X: v1.X * f,
+		Y: v1.Y * f,
+	}
+}
+
+func magnitude(v1 Vec2) float32 {
+	return v1.X*v1.X + v1.Y*v1.Y
+}
+
+func normalize(v1 Vec2) Vec2 {
+	mag := magnitude(v1)
+	return Vec2{X: v1.X / mag, Y: v1.Y / mag}
 }
 
 type Keyframe struct {
@@ -40,10 +70,11 @@ type Animation struct {
 }
 
 type Bone struct {
-	Id        int
-	Name      string
-	Parent_id int
-	Tex_idx   int
+	Id         int
+	Name       string
+	Parent_id  int
+	Tex_idx    int
+	Style_idxs []int
 
 	Rot    float32
 	Scale  Vec2
@@ -60,10 +91,23 @@ type Texture struct {
 	Offset Vec2
 }
 
+type Style struct {
+	Id       int
+	Name     string
+	Textures []Texture
+}
+
+type IkFamily struct {
+	Constraint string
+	TargetId   int
+	BoneIds    []int
+}
+
 type Armature struct {
 	Bones      []Bone
 	Animations []Animation
-	Textures   []Texture
+	Styles     []Style
+	IkFamilies []IkFamily
 }
 
 type Root struct {
@@ -116,7 +160,9 @@ func Animate(armature Armature, anim_idx int, frame int) []Bone {
 }
 
 func Inheritance(bones []Bone) []Bone {
-	for _, bone := range bones {
+	for b := range bones {
+		bone := &bones[b]
+
 		if bone.Parent_id == -1 {
 			continue
 		}
@@ -126,8 +172,8 @@ func Inheritance(bones []Bone) []Bone {
 
 		bone.Rot += parent.Rot
 
-		bone.Scale.mul(parent.Scale)
-		bone.Pos.mul(parent.Scale)
+		bone.Scale = bone.Scale.Mul(parent.Scale)
+		bone.Pos = bone.Pos.Mul(parent.Scale)
 
 		// rotate child such that it orbits parent
 		x := bone.Pos.X
@@ -137,10 +183,74 @@ func Inheritance(bones []Bone) []Bone {
 		bone.Pos.X = x*cos_parent_rot - y*sin_parent_rot
 		bone.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
 
-		bone.Pos.add(parent.Pos)
+		bone.Pos = bone.Pos.Add(parent.Pos)
 	}
 
 	return bones
+}
+
+func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
+	rotMap := make(map[uint]float32)
+
+	for _, ikFamily := range ikFamilies {
+		if ikFamily.TargetId == -1 {
+			continue
+		}
+
+		// forward-reaching
+		nextPos := bones[ikFamily.TargetId].Pos
+		var nextLength float32 = 0.
+
+		slices.Reverse(ikFamily.BoneIds)
+		for i, idx := range ikFamily.BoneIds {
+			bone := &bones[idx]
+
+			lengthLine := normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
+
+			if i != len(ikFamily.BoneIds)-1 {
+				nextBone := &bones[ikFamily.BoneIds[i+1]]
+				nextLength = magnitude(bone.Pos.Sub(nextBone.Pos))
+			}
+
+			bone.Pos = nextPos.Sub(lengthLine)
+			nextPos = bone.Pos
+		}
+
+		// backward-reaching
+		prevPos := bones[ikFamily.TargetId].Pos
+		var prevLength float32 = 0.
+
+		slices.Reverse(ikFamily.BoneIds)
+		for i, idx := range ikFamily.BoneIds {
+			bone := &bones[idx]
+
+			lengthLine := normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
+
+			if i != 0 {
+				nextBone := &bones[ikFamily.BoneIds[i-1]]
+				prevLength = magnitude(bone.Pos.Sub(nextBone.Pos))
+			}
+
+			bone.Pos = prevPos.Sub(lengthLine)
+			prevPos = bone.Pos
+		}
+
+		tipPos := bones[ikFamily.BoneIds[len(ikFamily.BoneIds)-1]].Pos
+		slices.Reverse(ikFamily.BoneIds)
+		for i, idx := range ikFamily.BoneIds {
+			if i == 0 {
+				continue
+			}
+
+			dir := tipPos.Sub(bones[idx].Pos)
+			rot := math.Atan2(float64(dir.Y), float64(dir.X))
+			tipPos = bones[idx].Pos
+
+			rotMap[uint(idx)] = float32(rot)
+		}
+	}
+
+	return rotMap
 }
 
 func find_bone(bones []Bone, id int) (Bone, error) {
