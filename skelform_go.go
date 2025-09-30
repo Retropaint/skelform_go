@@ -16,6 +16,14 @@ type Vec2 struct {
 	Y float32
 }
 
+func (v1 Vec2) add(v2 Vec2) Vec2 {
+	return Vec2{X: v1.X + v2.X, Y: v1.Y + v2.Y}
+}
+
+func (v1 Vec2) mul(v2 Vec2) Vec2 {
+	return Vec2{X: v1.X * v2.X, Y: v1.Y * v2.Y}
+}
+
 type Keyframe struct {
 	Frame      int
 	Bone_id    int
@@ -102,32 +110,37 @@ func Animate(armature Armature, anim_idx int, frame int) []Bone {
 		prop.Scale.Y *= interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "ScaleY", 1)
 		prop.Pos.X += interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "PositionX", 0)
 		prop.Pos.Y += interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "PositionY", 0)
+	}
 
+	return props
+}
+
+func Inheritance(bones []Bone) []Bone {
+	for _, bone := range bones {
 		if bone.Parent_id == -1 {
 			continue
 		}
 
 		// inherit parent
-		parent, _ := find_bone(props, bone.Parent_id)
+		parent, _ := find_bone(bones, bone.Parent_id)
 
-		prop.Rot += parent.Rot
-		prop.Scale.X *= parent.Scale.X
-		prop.Scale.Y *= parent.Scale.Y
-		prop.Pos.X *= parent.Scale.X
-		prop.Pos.Y *= parent.Scale.Y
+		bone.Rot += parent.Rot
 
-		x := prop.Pos.X
-		y := prop.Pos.Y
+		bone.Scale.mul(parent.Scale)
+		bone.Pos.mul(parent.Scale)
+
+		// rotate child such that it orbits parent
+		x := bone.Pos.X
+		y := bone.Pos.Y
 		sin_parent_rot := float32(math.Sin(float64(parent.Rot)))
 		cos_parent_rot := float32(math.Cos(float64(parent.Rot)))
-		prop.Pos.X = x*cos_parent_rot - y*sin_parent_rot
-		prop.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
+		bone.Pos.X = x*cos_parent_rot - y*sin_parent_rot
+		bone.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
 
-		prop.Pos.X += parent.Pos.X
-		prop.Pos.Y += parent.Pos.Y
+		bone.Pos.add(parent.Pos)
 	}
 
-	return props
+	return bones
 }
 
 func find_bone(bones []Bone, id int) (Bone, error) {
@@ -179,10 +192,12 @@ func interpolate(keyframes []Keyframe, frame int, bone_id int, element string, d
 
 	// fmt.Println(current_frame, total_frames)
 
+	// only handling linear interp for now
 	interp := float32(current_frame) / float32(total_frames)
 	start := prev_kf.Value
 	end := next_kf.Value - prev_kf.Value
 	result := start + (end * interp)
+
 	return result
 }
 
