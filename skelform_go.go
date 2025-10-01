@@ -145,7 +145,7 @@ func Load(path string) (Root, image.Image) {
 }
 
 func Animate(armature Armature, anim_idx int, frame int) []Bone {
-	var props []Bone
+	var bones []Bone
 
 	// fmt.Println(len(armature.Animations[anim_idx].Keyframes));
 
@@ -153,18 +153,18 @@ func Animate(armature Armature, anim_idx int, frame int) []Bone {
 	frame %= armature.Animations[anim_idx].Keyframes[last_kf].Frame
 
 	for _, bone := range armature.Bones {
-		props = append(props, bone)
+		bones = append(bones, bone)
 
-		prop := &props[len(props)-1]
+		bone := &bones[len(bones)-1]
 
-		prop.Rot += interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "Rotation", 0)
-		prop.Scale.X *= interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "ScaleX", 1)
-		prop.Scale.Y *= interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "ScaleY", 1)
-		prop.Pos.X += interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "PositionX", 0)
-		prop.Pos.Y += interpolate(armature.Animations[anim_idx].Keyframes, frame, prop.Id, "PositionY", 0)
+		bone.Rot += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "Rotation", 0)
+		bone.Scale.X *= interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "ScaleX", 1)
+		bone.Scale.Y *= interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "ScaleY", 1)
+		bone.Pos.X += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "PositionX", 0)
+		bone.Pos.Y += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "PositionY", 0)
 	}
 
-	return props
+	return bones
 }
 
 func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
