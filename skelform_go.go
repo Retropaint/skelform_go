@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"io/ioutil"
 	"math"
-	"slices"
 	"strconv"
 )
 
@@ -46,12 +45,21 @@ func (v1 Vec2) Mulf(f float32) Vec2 {
 }
 
 func magnitude(v1 Vec2) float32 {
-	return v1.X*v1.X + v1.Y*v1.Y
+	return float32(math.Sqrt(float64(v1.X*v1.X + v1.Y*v1.Y)))
 }
 
 func normalize(v1 Vec2) Vec2 {
 	mag := magnitude(v1)
 	return Vec2{X: v1.X / mag, Y: v1.Y / mag}
+}
+
+func rotate(point Vec2, rot float64) Vec2 {
+	cos := float32(math.Cos(rot))
+	sin := float32(math.Sin(rot))
+	return Vec2{
+		X: point.X*cos - point.Y*sin,
+		Y: point.X*sin + point.Y*cos,
+	}
 }
 
 type Keyframe struct {
@@ -99,15 +107,15 @@ type Style struct {
 
 type IkFamily struct {
 	Constraint string
-	TargetId   int
-	BoneIds    []int
+	Target_id  int
+	Bone_ids   []int
 }
 
 type Armature struct {
-	Bones      []Bone
-	Animations []Animation
-	Styles     []Style
-	IkFamilies []IkFamily
+	Bones       []Bone
+	Animations  []Animation
+	Styles      []Style
+	Ik_families []IkFamily
 }
 
 type Root struct {
@@ -159,31 +167,32 @@ func Animate(armature Armature, anim_idx int, frame int) []Bone {
 	return props
 }
 
-func Inheritance(bones []Bone) []Bone {
+func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 	for b := range bones {
 		bone := &bones[b]
 
-		if bone.Parent_id == -1 {
-			continue
+		if bone.Parent_id != -1 {
+			parent, _ := find_bone(bones, bone.Parent_id)
+
+			bone.Rot += parent.Rot
+
+			bone.Scale = bone.Scale.Mul(parent.Scale)
+			bone.Pos = bone.Pos.Mul(parent.Scale)
+
+			// rotate child such that it orbits parent
+			x := bone.Pos.X
+			y := bone.Pos.Y
+			sin_parent_rot := float32(math.Sin(float64(parent.Rot)))
+			cos_parent_rot := float32(math.Cos(float64(parent.Rot)))
+			bone.Pos.X = x*cos_parent_rot - y*sin_parent_rot
+			bone.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
+
+			bone.Pos = bone.Pos.Add(parent.Pos)
 		}
 
-		// inherit parent
-		parent, _ := find_bone(bones, bone.Parent_id)
-
-		bone.Rot += parent.Rot
-
-		bone.Scale = bone.Scale.Mul(parent.Scale)
-		bone.Pos = bone.Pos.Mul(parent.Scale)
-
-		// rotate child such that it orbits parent
-		x := bone.Pos.X
-		y := bone.Pos.Y
-		sin_parent_rot := float32(math.Sin(float64(parent.Rot)))
-		cos_parent_rot := float32(math.Cos(float64(parent.Rot)))
-		bone.Pos.X = x*cos_parent_rot - y*sin_parent_rot
-		bone.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
-
-		bone.Pos = bone.Pos.Add(parent.Pos)
+		if rot, ok := ikRots[uint(b)]; ok {
+			bones[b].Rot = rot
+		}
 	}
 
 	return bones
@@ -193,22 +202,29 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 	rotMap := make(map[uint]float32)
 
 	for _, ikFamily := range ikFamilies {
-		if ikFamily.TargetId == -1 {
+		if ikFamily.Target_id == -1 {
 			continue
 		}
 
+		startPos := bones[ikFamily.Bone_ids[0]].Pos
+
+		target := bones[ikFamily.Target_id].Pos
+		baseLine := normalize(target.Sub(startPos))
+		baseAngle := math.Atan2(float64(baseLine.Y), float64(baseLine.X))
+
 		// forward-reaching
-		nextPos := bones[ikFamily.TargetId].Pos
+		nextPos := bones[ikFamily.Target_id].Pos
 		var nextLength float32 = 0.
+		for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
+			bone := &bones[ikFamily.Bone_ids[i]]
 
-		slices.Reverse(ikFamily.BoneIds)
-		for i, idx := range ikFamily.BoneIds {
-			bone := &bones[idx]
+			lengthLine := Vec2{X: 0, Y: 0}
+			if i != len(ikFamily.Bone_ids)-1 {
+				lengthLine = normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
+			}
 
-			lengthLine := normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
-
-			if i != len(ikFamily.BoneIds)-1 {
-				nextBone := &bones[ikFamily.BoneIds[i+1]]
+			if i != 0 {
+				nextBone := &bones[ikFamily.Bone_ids[i-1]]
 				nextLength = magnitude(bone.Pos.Sub(nextBone.Pos))
 			}
 
@@ -216,37 +232,60 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 			nextPos = bone.Pos
 		}
 
-		// backward-reaching
-		prevPos := bones[ikFamily.TargetId].Pos
+		//backward-reaching
+		prevPos := startPos
 		var prevLength float32 = 0.
+		for i := 0; i < len(ikFamily.Bone_ids); i++ {
+			bone := &bones[ikFamily.Bone_ids[i]]
 
-		slices.Reverse(ikFamily.BoneIds)
-		for i, idx := range ikFamily.BoneIds {
-			bone := &bones[idx]
-
-			lengthLine := normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
-
+			lengthLine := Vec2{X: 0, Y: 0}
 			if i != 0 {
-				nextBone := &bones[ikFamily.BoneIds[i-1]]
+				lengthLine = normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
+			}
+
+			if i != len(ikFamily.Bone_ids)-1 {
+				nextBone := &bones[ikFamily.Bone_ids[i+1]]
 				prevLength = magnitude(bone.Pos.Sub(nextBone.Pos))
 			}
 
 			bone.Pos = prevPos.Sub(lengthLine)
+
+			if i != 0 && i != len(ikFamily.Bone_ids)-1 && ikFamily.Constraint != "None" {
+				jointLine := normalize(prevPos.Sub(bone.Pos))
+				jointAngle := math.Atan2(float64(jointLine.Y), float64(jointLine.X)) - baseAngle
+
+				var constraintMin float64
+				var constraintMax float64
+				if ikFamily.Constraint == "Clockwise" {
+					constraintMin = -3.14
+					constraintMax = 0
+				} else {
+					constraintMin = 0
+					constraintMax = 3.14
+				}
+
+				if jointAngle > constraintMax || jointAngle < constraintMin {
+					pushAngle := -jointAngle * 2
+					newPoint := rotate(bone.Pos.Sub(prevPos), pushAngle)
+					bone.Pos = newPoint.Add(prevPos)
+				}
+			}
+
 			prevPos = bone.Pos
 		}
 
-		tipPos := bones[ikFamily.BoneIds[len(ikFamily.BoneIds)-1]].Pos
-		slices.Reverse(ikFamily.BoneIds)
-		for i, idx := range ikFamily.BoneIds {
-			if i == 0 {
+		tipPos := bones[ikFamily.Bone_ids[len(ikFamily.Bone_ids)-1]].Pos
+		for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
+			bone := &bones[ikFamily.Bone_ids[i]]
+			if i == len(ikFamily.Bone_ids)-1 {
 				continue
 			}
 
-			dir := tipPos.Sub(bones[idx].Pos)
+			dir := tipPos.Sub(bone.Pos)
 			rot := math.Atan2(float64(dir.Y), float64(dir.X))
-			tipPos = bones[idx].Pos
+			tipPos = bone.Pos
 
-			rotMap[uint(idx)] = float32(rot)
+			rotMap[uint(ikFamily.Bone_ids[i])] = float32(rot)
 		}
 	}
 
