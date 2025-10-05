@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"image"
 	"image/png"
 	"io/ioutil"
