@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io/ioutil"
@@ -65,7 +66,7 @@ func rotate(point Vec2, rot float64) Vec2 {
 type Keyframe struct {
 	Frame      int
 	Bone_id    int
-	Element    string
+	Element    string `json:"_element"`
 	Element_id int
 	Value      float32
 	Transition string
@@ -152,9 +153,8 @@ func Animate(armature Armature, anim_idx int, frame int) []Bone {
 	last_kf := len(armature.Animations[anim_idx].Keyframes) - 1
 	frame %= armature.Animations[anim_idx].Keyframes[last_kf].Frame
 
-	for _, bone := range armature.Bones {
-		bones = append(bones, bone)
-
+	for b := range armature.Bones {
+		bones = append(bones, armature.Bones[b])
 		bone := &bones[len(bones)-1]
 
 		bone.Rot += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "Rotation", 0)
