@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"math"
 	"strconv"
+	"time"
 )
 
 type Vec2 struct {
@@ -78,11 +79,11 @@ type Animation struct {
 }
 
 type Bone struct {
-	Id         int
-	Name       string
-	Parent_id  int
-	Tex_idx    int
-	Style_idxs []int
+	Id        int
+	Name      string
+	Parent_id int
+	Tex_idx   int
+	Style_ids []int
 
 	Rot    float32
 	Scale  Vec2
@@ -144,23 +145,14 @@ func Load(path string) (Root, image.Image) {
 	return root, texture
 }
 
-func Animate(armature Armature, anim_idx int, frame int) []Bone {
-	var bones []Bone
-
-	// fmt.Println(len(armature.Animations[anim_idx].Keyframes));
-
-	last_kf := len(armature.Animations[anim_idx].Keyframes) - 1
-	frame %= armature.Animations[anim_idx].Keyframes[last_kf].Frame
-
-	for b := range armature.Bones {
-		bones = append(bones, armature.Bones[b])
-		bone := &bones[len(bones)-1]
-
-		bone.Rot += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "Rotation", 0)
-		bone.Scale.X *= interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "ScaleX", 1)
-		bone.Scale.Y *= interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "ScaleY", 1)
-		bone.Pos.X += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "PositionX", 0)
-		bone.Pos.Y += interpolate(armature.Animations[anim_idx].Keyframes, frame, bone.Id, "PositionY", 0)
+func Animate(bones []Bone, animation Animation, frame int) []Bone {
+	for b := range bones {
+		bone := &bones[b]
+		bone.Rot += interpolate(animation.Keyframes, frame, bone.Id, "Rotation", 0)
+		bone.Scale.X *= interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", 1)
+		bone.Scale.Y *= interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", 1)
+		bone.Pos.X += interpolate(animation.Keyframes, frame, bone.Id, "PositionX", 0)
+		bone.Pos.Y += interpolate(animation.Keyframes, frame, bone.Id, "PositionY", 0)
 	}
 
 	return bones
@@ -349,16 +341,30 @@ func interpolate(keyframes []Keyframe, frame int, bone_id int, element string, d
 	return result
 }
 
-func Get_frame_by_time(anim Animation, unix_milli int64, reverse bool) int {
-	fps := anim.Fps
-	last_frame := anim.Keyframes[len(anim.Keyframes)-1].Frame
+// Apply frame effects based on an animation.
+func FormatFrame(animation Animation, frame int, reverse bool, loop bool) int {
+	lastKf := len(animation.Keyframes) - 1
+	lastFrame := animation.Keyframes[lastKf].Frame
 
-	var frametime float32 = 1 / float32(fps)
-	frame := int(float32(unix_milli) / frametime / 1000)
+	if loop {
+		frame %= animation.Keyframes[lastKf].Frame
+	}
 
 	if reverse {
-		frame = last_frame - frame
+		frame = lastFrame - frame
 	}
+
+	return frame
+}
+
+// Provide a frame of the animation based on time.
+func TimeFrame(animation Animation, time time.Duration, reverse bool, loop bool) int {
+	fps := animation.Fps
+
+	var frametime float32 = 1 / float32(fps)
+	frame := int(float32(time.Milliseconds()) / frametime / 1000)
+
+	frame = FormatFrame(animation, frame, reverse, loop)
 
 	return frame
 }
