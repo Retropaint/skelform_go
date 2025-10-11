@@ -145,14 +145,14 @@ func Load(path string) (Root, image.Image) {
 	return root, texture
 }
 
-func Animate(bones []Bone, animation Animation, frame int) []Bone {
+func Animate(bones []Bone, animation Animation, frame int, blendFrames int) []Bone {
 	for b := range bones {
 		bone := &bones[b]
-		bone.Rot = interpolate(animation.Keyframes, frame, bone.Id, "Rotation", bone.Rot)
-		bone.Scale.X = interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", bone.Scale.X)
-		bone.Scale.Y = interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", bone.Scale.Y)
-		bone.Pos.X = interpolate(animation.Keyframes, frame, bone.Id, "PositionX", bone.Pos.X)
-		bone.Pos.Y = interpolate(animation.Keyframes, frame, bone.Id, "PositionY", bone.Pos.Y)
+		bone.Rot = interpolate(animation.Keyframes, frame, bone.Id, "Rotation", bone.Rot, blendFrames)
+		bone.Scale.X = interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", bone.Scale.X, blendFrames)
+		bone.Scale.Y = interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", bone.Scale.Y, blendFrames)
+		bone.Pos.X = interpolate(animation.Keyframes, frame, bone.Id, "PositionX", bone.Pos.X, blendFrames)
+		bone.Pos.Y = interpolate(animation.Keyframes, frame, bone.Id, "PositionY", bone.Pos.Y, blendFrames)
 	}
 
 	return bones
@@ -293,7 +293,14 @@ func find_bone(bones []Bone, id int) (Bone, error) {
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
 }
 
-func interpolate(keyframes []Keyframe, frame int, boneId int, element string, defaultValue float32) float32 {
+func interpolate(
+	keyframes []Keyframe,
+	frame int,
+	boneId int,
+	element string,
+	defaultValue float32,
+	blendFrames int,
+) float32 {
 	var prevKf Keyframe
 	var nextKf Keyframe
 	prevKf.Frame = -1
@@ -327,7 +334,7 @@ func interpolate(keyframes []Keyframe, frame int, boneId int, element string, de
 	totalFrames := nextKf.Frame - prevKf.Frame
 	currentFrame := frame - prevKf.Frame
 	if totalFrames == 0 {
-		return prevKf.Value
+		return blend(currentFrame, blendFrames, defaultValue, prevKf.Value)
 	}
 
 	// only handling linear interp for now
@@ -336,7 +343,16 @@ func interpolate(keyframes []Keyframe, frame int, boneId int, element string, de
 	end := nextKf.Value - prevKf.Value
 	result := start + (end * interp)
 
-	return result
+	return blend(currentFrame, blendFrames, defaultValue, result)
+}
+
+func blend(frame int, maxFrames int, startValue float32, endValue float32) float32 {
+	if frame >= maxFrames {
+		return endValue
+	}
+	interp := float32(frame) / float32(maxFrames)
+	end := endValue - startValue
+	return startValue + (end * interp)
 }
 
 // Apply frame effects based on an animation.
