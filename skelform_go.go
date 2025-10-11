@@ -148,11 +148,11 @@ func Load(path string) (Root, image.Image) {
 func Animate(bones []Bone, animation Animation, frame int) []Bone {
 	for b := range bones {
 		bone := &bones[b]
-		bone.Rot += interpolate(animation.Keyframes, frame, bone.Id, "Rotation", 0)
-		bone.Scale.X *= interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", 1)
-		bone.Scale.Y *= interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", 1)
-		bone.Pos.X += interpolate(animation.Keyframes, frame, bone.Id, "PositionX", 0)
-		bone.Pos.Y += interpolate(animation.Keyframes, frame, bone.Id, "PositionY", 0)
+		bone.Rot = interpolate(animation.Keyframes, frame, bone.Id, "Rotation", bone.Rot)
+		bone.Scale.X = interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", bone.Scale.X)
+		bone.Scale.Y = interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", bone.Scale.Y)
+		bone.Pos.X = interpolate(animation.Keyframes, frame, bone.Id, "PositionX", bone.Pos.X)
+		bone.Pos.Y = interpolate(animation.Keyframes, frame, bone.Id, "PositionY", bone.Pos.Y)
 	}
 
 	return bones
@@ -293,49 +293,47 @@ func find_bone(bones []Bone, id int) (Bone, error) {
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
 }
 
-func interpolate(keyframes []Keyframe, frame int, bone_id int, element string, default_value float32) float32 {
-	var prev_kf Keyframe
-	var next_kf Keyframe
-	prev_kf.Frame = -1
-	next_kf.Frame = -1
+func interpolate(keyframes []Keyframe, frame int, boneId int, element string, defaultValue float32) float32 {
+	var prevKf Keyframe
+	var nextKf Keyframe
+	prevKf.Frame = -1
+	nextKf.Frame = -1
 
 	for _, kf := range keyframes {
 		if kf.Frame >= frame {
 			break
-		} else if kf.Bone_id == bone_id && kf.Element == element {
-			prev_kf = kf
+		} else if kf.Bone_id == boneId && kf.Element == element {
+			prevKf = kf
 		}
 	}
 
 	for _, kf := range keyframes {
-		if kf.Frame >= frame && kf.Bone_id == bone_id && kf.Element == element {
-			next_kf = kf
+		if kf.Frame >= frame && kf.Bone_id == boneId && kf.Element == element {
+			nextKf = kf
 			break
 		}
 	}
 
-	if prev_kf.Frame == -1 {
-		prev_kf = next_kf
-	} else if next_kf.Frame == -1 {
-		next_kf = prev_kf
+	if prevKf.Frame == -1 {
+		prevKf = nextKf
+	} else if nextKf.Frame == -1 {
+		nextKf = prevKf
 	}
 
-	if prev_kf.Frame == -1 && next_kf.Frame == -1 {
-		return default_value
+	if prevKf.Frame == -1 && nextKf.Frame == -1 {
+		return defaultValue
 	}
 
-	total_frames := next_kf.Frame - prev_kf.Frame
-	current_frame := frame - prev_kf.Frame
-	if total_frames == 0 {
-		return prev_kf.Value
+	totalFrames := nextKf.Frame - prevKf.Frame
+	currentFrame := frame - prevKf.Frame
+	if totalFrames == 0 {
+		return prevKf.Value
 	}
-
-	// fmt.Println(current_frame, total_frames)
 
 	// only handling linear interp for now
-	interp := float32(current_frame) / float32(total_frames)
-	start := prev_kf.Value
-	end := next_kf.Value - prev_kf.Value
+	interp := float32(currentFrame) / float32(totalFrames)
+	start := prevKf.Value
+	end := nextKf.Value - prevKf.Value
 	result := start + (end * interp)
 
 	return result
