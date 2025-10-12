@@ -148,11 +148,11 @@ func Load(path string) (Root, image.Image) {
 func Animate(bones []Bone, animation Animation, frame int, blendFrames int) []Bone {
 	for b := range bones {
 		bone := &bones[b]
-		bone.Rot = interpolate(animation.Keyframes, frame, bone.Id, "Rotation", bone.Rot, blendFrames)
-		bone.Scale.X = interpolate(animation.Keyframes, frame, bone.Id, "ScaleX", bone.Scale.X, blendFrames)
-		bone.Scale.Y = interpolate(animation.Keyframes, frame, bone.Id, "ScaleY", bone.Scale.Y, blendFrames)
-		bone.Pos.X = interpolate(animation.Keyframes, frame, bone.Id, "PositionX", bone.Pos.X, blendFrames)
-		bone.Pos.Y = interpolate(animation.Keyframes, frame, bone.Id, "PositionY", bone.Pos.Y, blendFrames)
+		interpolateKeyframes(&bone.Rot, "Rotation", animation.Keyframes, frame, bone.Id, blendFrames)
+		interpolateKeyframes(&bone.Scale.X, "ScaleX", animation.Keyframes, frame, bone.Id, blendFrames)
+		interpolateKeyframes(&bone.Scale.Y, "ScaleY", animation.Keyframes, frame, bone.Id, blendFrames)
+		interpolateKeyframes(&bone.Pos.X, "PositionX", animation.Keyframes, frame, bone.Id, blendFrames)
+		interpolateKeyframes(&bone.Pos.Y, "PositionY", animation.Keyframes, frame, bone.Id, blendFrames)
 	}
 
 	return bones
@@ -293,23 +293,21 @@ func find_bone(bones []Bone, id int) (Bone, error) {
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
 }
 
-func interpolate(
+func interpolateKeyframes(
+	field *float32,
+	element string,
 	keyframes []Keyframe,
 	frame int,
 	boneId int,
-	element string,
-	defaultValue float32,
 	blendFrames int,
-) float32 {
+) {
 	var prevKf Keyframe
 	var nextKf Keyframe
 	prevKf.Frame = -1
 	nextKf.Frame = -1
 
 	for _, kf := range keyframes {
-		if kf.Frame >= frame {
-			break
-		} else if kf.Bone_id == boneId && kf.Element == element {
+		if kf.Frame < frame && kf.Bone_id == boneId && kf.Element == element {
 			prevKf = kf
 		}
 	}
@@ -328,29 +326,21 @@ func interpolate(
 	}
 
 	if prevKf.Frame == -1 && nextKf.Frame == -1 {
-		return defaultValue
+		return
 	}
 
 	totalFrames := nextKf.Frame - prevKf.Frame
 	currentFrame := frame - prevKf.Frame
-	if totalFrames == 0 {
-		return blend(currentFrame, blendFrames, defaultValue, prevKf.Value)
-	}
 
-	// only handling linear interp for now
-	interp := float32(currentFrame) / float32(totalFrames)
-	start := prevKf.Value
-	end := nextKf.Value - prevKf.Value
-	result := start + (end * interp)
-
-	return blend(currentFrame, blendFrames, defaultValue, result)
+	result := interpolate(currentFrame, totalFrames, prevKf.Value, nextKf.Value)
+	*field = interpolate(currentFrame, blendFrames, *field, result)
 }
 
-func blend(frame int, maxFrames int, startValue float32, endValue float32) float32 {
-	if frame >= maxFrames {
+func interpolate(current int, max int, startValue float32, endValue float32) float32 {
+	if max == 0 || current > max {
 		return endValue
 	}
-	interp := float32(frame) / float32(maxFrames)
+	interp := float32(current) / float32(max)
 	end := endValue - startValue
 	return startValue + (end * interp)
 }
