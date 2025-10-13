@@ -6,7 +6,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
-	"io/ioutil"
+	"io"
 	"math"
 	"strconv"
 	"time"
@@ -135,7 +135,7 @@ func Load(path string) (Root, image.Image) {
 	for _, f := range zip.File {
 		file, _ := f.Open()
 		if f.Name == "armature.json" {
-			bytes, _ := ioutil.ReadAll(file)
+			bytes, _ := io.ReadAll(file)
 			json.Unmarshal(bytes, &root)
 		} else if f.Name == "textures.png" {
 			texture, _ = png.Decode(file)
@@ -145,7 +145,7 @@ func Load(path string) (Root, image.Image) {
 	return root, texture
 }
 
-func Animate(bones []Bone, animation Animation, frame int, blendFrames int) []Bone {
+func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
 	for b := range bones {
 		bone := &bones[b]
 		interpolateKeyframes(&bone.Rot, "Rotation", animation.Keyframes, frame, bone.Id, blendFrames)
@@ -154,8 +154,6 @@ func Animate(bones []Bone, animation Animation, frame int, blendFrames int) []Bo
 		interpolateKeyframes(&bone.Pos.X, "PositionX", animation.Keyframes, frame, bone.Id, blendFrames)
 		interpolateKeyframes(&bone.Pos.Y, "PositionY", animation.Keyframes, frame, bone.Id, blendFrames)
 	}
-
-	return bones
 }
 
 func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
@@ -365,7 +363,7 @@ func FormatFrame(animation Animation, frame int, reverse bool, loop bool) int {
 func TimeFrame(animation Animation, time time.Duration, reverse bool, loop bool) int {
 	fps := animation.Fps
 
-	var frametime float32 = 1 / float32(fps)
+	frametime := 1. / float32(fps)
 	frame := int(float32(time.Milliseconds()) / frametime / 1000)
 
 	frame = FormatFrame(animation, frame, reverse, loop)
