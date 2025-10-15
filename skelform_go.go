@@ -349,7 +349,7 @@ func FormatFrame(animation Animation, frame int, reverse bool, loop bool) int {
 	lastFrame := animation.Keyframes[lastKf].Frame
 
 	if loop {
-		frame %= animation.Keyframes[lastKf].Frame
+		frame %= animation.Keyframes[lastKf].Frame + 1
 	}
 
 	if reverse {
