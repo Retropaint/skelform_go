@@ -92,6 +92,10 @@ type Bone struct {
 	Zindex float32
 
 	Parent_rot float32
+
+	Init_rot   float32
+	Init_scale Vec2
+	Init_pos   Vec2
 }
 
 type Texture struct {
@@ -146,13 +150,16 @@ func Load(path string) (Root, image.Image) {
 }
 
 func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
+	kf := animation.Keyframes
+	bf := blendFrames
+	ikf := interpolateKeyframes
 	for b := range bones {
 		bone := &bones[b]
-		interpolateKeyframes(&bone.Rot, "Rotation", animation.Keyframes, frame, bone.Id, blendFrames)
-		interpolateKeyframes(&bone.Scale.X, "ScaleX", animation.Keyframes, frame, bone.Id, blendFrames)
-		interpolateKeyframes(&bone.Scale.Y, "ScaleY", animation.Keyframes, frame, bone.Id, blendFrames)
-		interpolateKeyframes(&bone.Pos.X, "PositionX", animation.Keyframes, frame, bone.Id, blendFrames)
-		interpolateKeyframes(&bone.Pos.Y, "PositionY", animation.Keyframes, frame, bone.Id, blendFrames)
+		ikf(&bone.Rot, bone.Init_rot, "Rotation", kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.X, bone.Init_scale.X, "ScaleX", kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.Y, bone.Init_scale.Y, "ScaleY", kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.X, bone.Init_pos.X, "PositionX", kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.Y, bone.Init_pos.Y, "PositionY", kf, frame, bone.Id, bf)
 	}
 }
 
@@ -293,6 +300,7 @@ func find_bone(bones []Bone, id int) (Bone, error) {
 
 func interpolateKeyframes(
 	field *float32,
+	default_val float32,
 	element string,
 	keyframes []Keyframe,
 	frame int,
@@ -324,6 +332,7 @@ func interpolateKeyframes(
 	}
 
 	if prevKf.Frame == -1 && nextKf.Frame == -1 {
+		*field = interpolate(frame, blendFrames, *field, default_val)
 		return
 	}
 
