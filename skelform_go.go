@@ -117,36 +117,33 @@ type IkFamily struct {
 }
 
 type Armature struct {
-	Bones       []Bone
-	Animations  []Animation
-	Styles      []Style
-	Ik_families []IkFamily
-}
-
-type Root struct {
-	Armature     Armature
+	Version      string
 	Texture_size Vec2
+	Bones        []Bone
+	Animations   []Animation
+	Styles       []Style
+	Ik_families  []IkFamily
 }
 
-func Load(path string) (Root, image.Image) {
+func Load(path string) (Armature, image.Image) {
 	zip, _ := zip.OpenReader(path)
 
 	defer zip.Close()
 
-	var root Root
+	var armature Armature
 	var texture image.Image
 
 	for _, f := range zip.File {
 		file, _ := f.Open()
 		if f.Name == "armature.json" {
 			bytes, _ := io.ReadAll(file)
-			json.Unmarshal(bytes, &root)
+			json.Unmarshal(bytes, &armature)
 		} else if f.Name == "textures.png" {
 			texture, _ = png.Decode(file)
 		}
 	}
 
-	return root, texture
+	return armature, texture
 }
 
 func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
@@ -155,11 +152,44 @@ func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
 	ikf := interpolateKeyframes
 	for b := range bones {
 		bone := &bones[b]
-		ikf(&bone.Rot, bone.Init_rot, "Rotation", kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.X, bone.Init_scale.X, "ScaleX", kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.Y, bone.Init_scale.Y, "ScaleY", kf, frame, bone.Id, bf)
-		ikf(&bone.Pos.X, bone.Init_pos.X, "PositionX", kf, frame, bone.Id, bf)
-		ikf(&bone.Pos.Y, bone.Init_pos.Y, "PositionY", kf, frame, bone.Id, bf)
+		ikf(&bone.Rot, "Rotation", kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.X, "ScaleX", kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.Y, "ScaleY", kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.X, "PositionX", kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.Y, "PositionY", kf, frame, bone.Id, bf)
+	}
+}
+
+// Reset bones back to default states, if they haven't been animated.
+// Must be called after `Animate()` with the same animations provided.
+// `frame` must be first anim frame.
+func ResetBones(bones []Bone, anims []Animation, frame int, blendFrames int) {
+	for b := range bones {
+		bone := &bones[b]
+		resetBoneElement(&bone.Pos.X, bone.Init_pos.X, 0, bone.Id, frame, blendFrames, anims)
+		resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, 1, bone.Id, frame, blendFrames, anims)
+		resetBoneElement(&bone.Rot, bone.Init_rot, 2, bone.Id, frame, blendFrames, anims)
+		resetBoneElement(&bone.Scale.X, bone.Init_scale.X, 3, bone.Id, frame, blendFrames, anims)
+		resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, 4, bone.Id, frame, blendFrames, anims)
+	}
+}
+
+func resetBoneElement(value *float32, init float32, el int, bone_id int, frame int, blendFrames int, anims []Animation) {
+	shouldReset := true
+	for a := range anims {
+		anim := &anims[a]
+		for _, kf := range anim.Keyframes {
+			if kf.Bone_id == bone_id && kf.Element_id == el {
+				shouldReset = false
+				break
+			}
+		}
+		if !shouldReset {
+			break
+		}
+	}
+	if shouldReset {
+		*value = interpolate(frame, blendFrames, *value, init)
 	}
 }
 
@@ -300,7 +330,6 @@ func find_bone(bones []Bone, id int) (Bone, error) {
 
 func interpolateKeyframes(
 	field *float32,
-	default_val float32,
 	element string,
 	keyframes []Keyframe,
 	frame int,
@@ -332,7 +361,6 @@ func interpolateKeyframes(
 	}
 
 	if prevKf.Frame == -1 && nextKf.Frame == -1 {
-		*field = interpolate(frame, blendFrames, *field, default_val)
 		return
 	}
 
