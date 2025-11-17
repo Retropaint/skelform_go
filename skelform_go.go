@@ -138,6 +138,7 @@ type IkFamily struct {
 	Constraint string
 	Target_id  int
 	Bone_ids   []int
+	Mode       string
 }
 
 type Armature struct {
@@ -307,72 +308,14 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 			continue
 		}
 
-		startPos := bones[ikFamily.Bone_ids[0]].Pos
-
+		root := bones[ikFamily.Bone_ids[0]].Pos
 		target := bones[ikFamily.Target_id].Pos
-		baseLine := normalize(target.Sub(startPos))
-		baseAngle := math.Atan2(float64(baseLine.Y), float64(baseLine.X))
 
-		// forward-reaching
-		nextPos := bones[ikFamily.Target_id].Pos
-		var nextLength float32 = 0.
-		for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
-			bone := &bones[ikFamily.Bone_ids[i]]
-
-			lengthLine := Vec2{X: 0, Y: 0}
-			if i != len(ikFamily.Bone_ids)-1 {
-				lengthLine = normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
-			}
-
-			if i != 0 {
-				nextBone := &bones[ikFamily.Bone_ids[i-1]]
-				nextLength = magnitude(bone.Pos.Sub(nextBone.Pos))
-			}
-
-			bone.Pos = nextPos.Sub(lengthLine)
-			nextPos = bone.Pos
-		}
-
-		//backward-reaching
-		prevPos := startPos
-		var prevLength float32 = 0.
-		for i := 0; i < len(ikFamily.Bone_ids); i++ {
-			bone := &bones[ikFamily.Bone_ids[i]]
-
-			lengthLine := Vec2{X: 0, Y: 0}
-			if i != 0 {
-				lengthLine = normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
-			}
-
-			if i != len(ikFamily.Bone_ids)-1 {
-				nextBone := &bones[ikFamily.Bone_ids[i+1]]
-				prevLength = magnitude(bone.Pos.Sub(nextBone.Pos))
-			}
-
-			bone.Pos = prevPos.Sub(lengthLine)
-
-			if i != 0 && i != len(ikFamily.Bone_ids)-1 && ikFamily.Constraint != "None" {
-				jointLine := normalize(prevPos.Sub(bone.Pos))
-				jointAngle := math.Atan2(float64(jointLine.Y), float64(jointLine.X)) - baseAngle
-
-				var constraintMin float64
-				var constraintMax float64
-				if ikFamily.Constraint == "Clockwise" {
-					constraintMin = -3.14
-					constraintMax = 0
-				} else {
-					constraintMin = 0
-					constraintMax = 3.14
-				}
-
-				if jointAngle > constraintMax || jointAngle < constraintMin {
-					pushAngle := -jointAngle * 2
-					newPoint := rotate(bone.Pos.Sub(prevPos), pushAngle)
-					bone.Pos = newPoint.Add(prevPos)
-				}
-			}
-
-			prevPos = bone.Pos
+		switch ikFamily.Mode {
+		case "FABRIK":
+			fabrik(ikFamily, bones, target, root)
+		case "Arc":
+			arc_ik(ikFamily, bones, root, target)
 		}
 
 		tipPos := bones[ikFamily.Bone_ids[len(ikFamily.Bone_ids)-1]].Pos
@@ -383,14 +326,109 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 			}
 
 			dir := tipPos.Sub(bone.Pos)
-			rot := math.Atan2(float64(dir.Y), float64(dir.X))
+			bones[ikFamily.Bone_ids[i]].Rot = float32(math.Atan2(float64(dir.Y), float64(dir.X)))
 			tipPos = bone.Pos
+		}
 
-			rotMap[uint(ikFamily.Bone_ids[i])] = float32(rot)
+		jointDir := normalize(bones[ikFamily.Bone_ids[1]].Pos.Sub(bones[ikFamily.Bone_ids[0]].Pos))
+		baseDir := normalize(target.Sub(root))
+		dir := jointDir.X*baseDir.Y - baseDir.X*jointDir.Y
+		baseAngle := math.Atan2(float64(baseDir.Y), float64(baseDir.X))
+
+		cw := ikFamily.Constraint == "Clockwise" && dir > 0
+		ccw := ikFamily.Constraint == "CounterClockwise" && dir < 0
+		if cw || ccw {
+			for _, id := range ikFamily.Bone_ids {
+				bones[id].Rot = -bones[id].Rot + float32(baseAngle*2)
+			}
+		}
+
+		for i, boneId := range ikFamily.Bone_ids {
+			if i == len(ikFamily.Bone_ids)-1 {
+				continue
+			}
+			rotMap[uint(boneId)] = bones[boneId].Rot
 		}
 	}
 
 	return rotMap
+}
+
+func fabrik(ikFamily IkFamily, bones []Bone, target Vec2, root Vec2) {
+	// forward-reaching
+	nextPos := target
+	var nextLength float32 = 0.
+	for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
+		bone := &bones[ikFamily.Bone_ids[i]]
+
+		lengthLine := Vec2{X: 0, Y: 0}
+		if i != len(ikFamily.Bone_ids)-1 {
+			lengthLine = normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
+		}
+
+		if i != 0 {
+			nextBone := &bones[ikFamily.Bone_ids[i-1]]
+			nextLength = magnitude(bone.Pos.Sub(nextBone.Pos))
+		}
+
+		bone.Pos = nextPos.Sub(lengthLine)
+		nextPos = bone.Pos
+	}
+
+	//backward-reaching
+	prevPos := root
+	var prevLength float32 = 0.
+	for i := 0; i < len(ikFamily.Bone_ids); i++ {
+		bone := &bones[ikFamily.Bone_ids[i]]
+
+		lengthLine := Vec2{X: 0, Y: 0}
+		if i != 0 {
+			lengthLine = normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
+		}
+
+		if i != len(ikFamily.Bone_ids)-1 {
+			nextBone := &bones[ikFamily.Bone_ids[i+1]]
+			prevLength = magnitude(bone.Pos.Sub(nextBone.Pos))
+		}
+
+		bone.Pos = prevPos.Sub(lengthLine)
+		prevPos = bone.Pos
+	}
+}
+
+func arc_ik(ikFamily IkFamily, bones []Bone, root Vec2, target Vec2) {
+	dist := []float32{0}
+	maxLength := magnitude(bones[ikFamily.Bone_ids[len(ikFamily.Bone_ids)-1]].Pos.Sub(root))
+	currLength := float32(0)
+	for f := range ikFamily.Bone_ids {
+		if f == 0 {
+			continue
+		}
+		length := magnitude(bones[ikFamily.Bone_ids[f]].Pos.Sub(bones[ikFamily.Bone_ids[f-1]].Pos))
+		currLength += length
+		dist = append(dist, float32(currLength)/float32(maxLength))
+	}
+
+	base := target.Sub(root)
+	baseAngle := math.Atan2(float64(base.Y), float64(base.X))
+	baseMag := math.Min(float64(magnitude(base)), float64(maxLength))
+	peak := maxLength / float32(baseMag)
+	valley := float32(baseMag) / maxLength
+
+	for f := range ikFamily.Bone_ids {
+		if f == 0 {
+			continue
+		}
+
+		angle := float32(math.Sin(float64(dist[f] * 3.14)))
+		bones[ikFamily.Bone_ids[f]].Pos = Vec2{
+			X: bones[ikFamily.Bone_ids[f]].Pos.X * valley,
+			Y: root.Y + (1-peak)*angle*float32(baseMag),
+		}
+
+		rotated := rotate(bones[ikFamily.Bone_ids[f]].Pos.Sub(root), baseAngle)
+		bones[ikFamily.Bone_ids[f]].Pos = rotated.Add(root)
+	}
 }
 
 func findBone(bones []Bone, id int) (Bone, error) {
