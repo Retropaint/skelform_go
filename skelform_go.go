@@ -51,6 +51,9 @@ func magnitude(v1 Vec2) float32 {
 
 func normalize(v1 Vec2) Vec2 {
 	mag := magnitude(v1)
+	if mag == 0 {
+		return Vec2{X: 0, Y: 0}
+	}
 	return Vec2{X: v1.X / mag, Y: v1.Y / mag}
 }
 
@@ -66,7 +69,7 @@ func rotate(point Vec2, rot float64) Vec2 {
 type Keyframe struct {
 	Frame      int
 	Bone_id    int
-	Element    string `json:"_element"`
+	Element    string
 	Element_id int
 	Value      float32
 	Transition string
@@ -76,6 +79,23 @@ type Animation struct {
 	Name      string
 	Fps       int
 	Keyframes []Keyframe
+}
+
+type Vertex struct {
+	Pos Vec2
+	Uv  Vec2
+	Id  int
+}
+
+type BoneBindVert struct {
+	Id     int
+	Weight float32
+}
+
+type Bind struct {
+	Bone_id int
+	Is_path bool
+	Verts   []BoneBindVert
 }
 
 type Bone struct {
@@ -90,6 +110,10 @@ type Bone struct {
 	Pos    Vec2
 	Pivot  Vec2
 	Zindex float32
+
+	Vertices []Vertex
+	Indices  []int
+	Binds    []Bind
 
 	Parent_rot float32
 
@@ -198,20 +222,14 @@ func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 		bone := &bones[b]
 
 		if bone.Parent_id != -1 {
-			parent, _ := find_bone(bones, bone.Parent_id)
+			parent, _ := findBone(bones, bone.Parent_id)
 
 			bone.Rot += parent.Rot
 
 			bone.Scale = bone.Scale.Mul(parent.Scale)
 			bone.Pos = bone.Pos.Mul(parent.Scale)
 
-			// rotate child such that it orbits parent
-			x := bone.Pos.X
-			y := bone.Pos.Y
-			sin_parent_rot := float32(math.Sin(float64(parent.Rot)))
-			cos_parent_rot := float32(math.Cos(float64(parent.Rot)))
-			bone.Pos.X = x*cos_parent_rot - y*sin_parent_rot
-			bone.Pos.Y = x*sin_parent_rot + y*cos_parent_rot
+			bone.Pos = rotate(bone.Pos, float64(parent.Rot))
 
 			bone.Pos = bone.Pos.Add(parent.Pos)
 		}
@@ -222,6 +240,63 @@ func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 	}
 
 	return bones
+}
+
+func ConstructVerts(bones []Bone) {
+	for b := range bones {
+		bone := &bones[b]
+
+		var initVertPos []Vec2
+		for _, vert := range bone.Vertices {
+			initVertPos = append(initVertPos, vert.Pos)
+		}
+
+		for v := range bone.Vertices {
+			vert := &bone.Vertices[v]
+			vert.Pos = inheritVert(vert.Pos, *bone)
+		}
+
+		for bi, bind := range bone.Binds {
+			if bind.Bone_id == -1 {
+				continue
+			}
+
+			bindBone, _ := findBone(bones, bind.Bone_id)
+
+			for _, bindVert := range bind.Verts {
+				if !bind.Is_path {
+					vert := &bone.Vertices[bindVert.Id]
+					endPos := inheritVert(initVertPos[bindVert.Id], bindBone).Sub(vert.Pos)
+					vert.Pos = vert.Pos.Add(endPos.Mulf(bindVert.Weight))
+					continue
+				}
+
+				prev := int(math.Max(float64(bi-1), 0))
+				next := int(math.Min(float64(bi+1), float64(len(bone.Binds)-1)))
+				prevBindBone, _ := findBone(bones, bone.Binds[prev].Bone_id)
+				nextBindBone, _ := findBone(bones, bone.Binds[next].Bone_id)
+
+				prevDir := bindBone.Pos.Sub(prevBindBone.Pos)
+				nextDir := nextBindBone.Pos.Sub(bindBone.Pos)
+				prevNormal := normalize(Vec2{-prevDir.Y, prevDir.X})
+				nextNormal := normalize(Vec2{-nextDir.Y, nextDir.X})
+				average := prevNormal.Add(nextNormal)
+				normalAngle := math.Atan2(float64(average.Y), float64(average.X))
+
+				vert := &bone.Vertices[bindVert.Id]
+				vert.Pos = initVertPos[bindVert.Id].Add(bindBone.Pos)
+				rotated := rotate(vert.Pos.Sub(bindBone.Pos), normalAngle)
+				vert.Pos = bindBone.Pos.Add(rotated.Mulf(bindVert.Weight))
+			}
+		}
+	}
+}
+
+func inheritVert(pos Vec2, bone Bone) Vec2 {
+	pos = pos.Mul(bone.Scale)
+	pos = rotate(pos, float64(bone.Rot))
+	pos = pos.Add(bone.Pos)
+	return pos
 }
 
 func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
@@ -318,7 +393,7 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 	return rotMap
 }
 
-func find_bone(bones []Bone, id int) (Bone, error) {
+func findBone(bones []Bone, id int) (Bone, error) {
 	for _, bone := range bones {
 		if bone.Id == id {
 			return bone, nil
