@@ -67,12 +67,12 @@ func rotate(point Vec2, rot float64) Vec2 {
 }
 
 type Keyframe struct {
-	Frame      int
-	Bone_id    int
-	Element    string
-	Element_id int
-	Value      float32
-	Transition string
+	Frame       int
+	Bone_id     int
+	Element_str string
+	Element     int
+	Value       float32
+	Transition  string
 }
 
 type Animation struct {
@@ -105,6 +105,14 @@ type Bone struct {
 	Tex_idx   int
 	Style_ids []int
 
+	Ik_family_id      int
+	Ik_constraint_str string
+	Ik_constraint     int
+	Ik_mode_str       string
+	Ik_mode           int
+	Ik_target_id      int
+	Ik_bone_ids       []int
+
 	Rot    float32
 	Scale  Vec2
 	Pos    Vec2
@@ -134,20 +142,13 @@ type Style struct {
 	Textures []Texture
 }
 
-type IkFamily struct {
-	Constraint string
-	Target_id  int
-	Bone_ids   []int
-	Mode       string
-}
-
 type Armature struct {
 	Version      string
+	Ik_root_ids  []int
 	Texture_size Vec2
 	Bones        []Bone
 	Animations   []Animation
 	Styles       []Style
-	Ik_families  []IkFamily
 }
 
 func Load(path string) (Armature, image.Image) {
@@ -177,11 +178,15 @@ func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
 	ikf := interpolateKeyframes
 	for b := range bones {
 		bone := &bones[b]
-		ikf(&bone.Rot, "Rotation", kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.X, "ScaleX", kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.Y, "ScaleY", kf, frame, bone.Id, bf)
-		ikf(&bone.Pos.X, "PositionX", kf, frame, bone.Id, bf)
-		ikf(&bone.Pos.Y, "PositionY", kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.X, 0, kf, frame, bone.Id, bf)
+		ikf(&bone.Pos.Y, 1, kf, frame, bone.Id, bf)
+		ikf(&bone.Rot, 2, kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.X, 3, kf, frame, bone.Id, bf)
+		ikf(&bone.Scale.Y, 4, kf, frame, bone.Id, bf)
+		prev := getPrevKeyframe(kf, frame, 7, bone.Id)
+		if prev != -1 {
+			bone.Ik_constraint = int(kf[prev].Value)
+		}
 	}
 }
 
@@ -199,20 +204,20 @@ func ResetBones(bones []Bone, anims []Animation, frame int, blendFrames int) {
 	}
 }
 
-func resetBoneElement(value *float32, init float32, el int, bone_id int, frame int, blendFrames int, anims []Animation) {
-	shouldReset := true
+func attemptReset(anims []Animation, boneId int, el int) bool {
 	for a := range anims {
 		anim := &anims[a]
 		for _, kf := range anim.Keyframes {
-			if kf.Bone_id == bone_id && kf.Element_id == el {
-				shouldReset = false
-				break
+			if kf.Bone_id == boneId && kf.Element == el {
+				return false
 			}
 		}
-		if !shouldReset {
-			break
-		}
 	}
+	return true
+}
+
+func resetBoneElement(value *float32, init float32, el int, boneId int, frame int, blendFrames int, anims []Animation) {
+	shouldReset := attemptReset(anims, boneId, el)
 	if shouldReset {
 		*value = interpolate(frame, blendFrames, *value, init)
 	}
@@ -300,51 +305,53 @@ func inheritVert(pos Vec2, bone Bone) Vec2 {
 	return pos
 }
 
-func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
+func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
 	rotMap := make(map[uint]float32)
 
-	for _, ikFamily := range ikFamilies {
-		if ikFamily.Target_id == -1 {
+	for _, root_id := range ik_root_ids {
+		family := bones[root_id]
+
+		if family.Ik_target_id == -1 {
 			continue
 		}
 
-		root := bones[ikFamily.Bone_ids[0]].Pos
-		target := bones[ikFamily.Target_id].Pos
+		root := bones[family.Ik_bone_ids[0]].Pos
+		target := bones[family.Ik_target_id].Pos
 
-		switch ikFamily.Mode {
-		case "FABRIK":
-			fabrik(ikFamily, bones, target, root)
-		case "Arc":
-			arc_ik(ikFamily, bones, root, target)
+		switch family.Ik_mode {
+		case 0:
+			fabrik(family.Ik_bone_ids, bones, target, root)
+		case 1:
+			arc_ik(family.Ik_bone_ids, bones, root, target)
 		}
 
-		tipPos := bones[ikFamily.Bone_ids[len(ikFamily.Bone_ids)-1]].Pos
-		for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
-			bone := &bones[ikFamily.Bone_ids[i]]
-			if i == len(ikFamily.Bone_ids)-1 {
+		tipPos := bones[family.Ik_bone_ids[len(family.Ik_bone_ids)-1]].Pos
+		for i := len(family.Ik_bone_ids) - 1; i >= 0; i-- {
+			bone := &bones[family.Ik_bone_ids[i]]
+			if i == len(family.Ik_bone_ids)-1 {
 				continue
 			}
 
 			dir := tipPos.Sub(bone.Pos)
-			bones[ikFamily.Bone_ids[i]].Rot = float32(math.Atan2(float64(dir.Y), float64(dir.X)))
+			bones[family.Ik_bone_ids[i]].Rot = float32(math.Atan2(float64(dir.Y), float64(dir.X)))
 			tipPos = bone.Pos
 		}
 
-		jointDir := normalize(bones[ikFamily.Bone_ids[1]].Pos.Sub(bones[ikFamily.Bone_ids[0]].Pos))
+		jointDir := normalize(bones[family.Ik_bone_ids[1]].Pos.Sub(bones[family.Ik_bone_ids[0]].Pos))
 		baseDir := normalize(target.Sub(root))
 		dir := jointDir.X*baseDir.Y - baseDir.X*jointDir.Y
 		baseAngle := math.Atan2(float64(baseDir.Y), float64(baseDir.X))
 
-		cw := ikFamily.Constraint == "Clockwise" && dir > 0
-		ccw := ikFamily.Constraint == "CounterClockwise" && dir < 0
+		cw := family.Ik_constraint == 1 && dir > 0
+		ccw := family.Ik_constraint == 2 && dir < 0
 		if cw || ccw {
-			for _, id := range ikFamily.Bone_ids {
+			for _, id := range family.Ik_bone_ids {
 				bones[id].Rot = -bones[id].Rot + float32(baseAngle*2)
 			}
 		}
 
-		for i, boneId := range ikFamily.Bone_ids {
-			if i == len(ikFamily.Bone_ids)-1 {
+		for i, boneId := range family.Ik_bone_ids {
+			if i == len(family.Ik_bone_ids)-1 {
 				continue
 			}
 			rotMap[uint(boneId)] = bones[boneId].Rot
@@ -354,20 +361,20 @@ func InverseKinematics(bones []Bone, ikFamilies []IkFamily) map[uint]float32 {
 	return rotMap
 }
 
-func fabrik(ikFamily IkFamily, bones []Bone, target Vec2, root Vec2) {
+func fabrik(bone_ids []int, bones []Bone, target Vec2, root Vec2) {
 	// forward-reaching
 	nextPos := target
 	var nextLength float32 = 0.
-	for i := len(ikFamily.Bone_ids) - 1; i >= 0; i-- {
-		bone := &bones[ikFamily.Bone_ids[i]]
+	for i := len(bone_ids) - 1; i >= 0; i-- {
+		bone := &bones[bone_ids[i]]
 
 		lengthLine := Vec2{X: 0, Y: 0}
-		if i != len(ikFamily.Bone_ids)-1 {
+		if i != len(bone_ids)-1 {
 			lengthLine = normalize(nextPos.Sub(bone.Pos)).Mulf(nextLength)
 		}
 
 		if i != 0 {
-			nextBone := &bones[ikFamily.Bone_ids[i-1]]
+			nextBone := &bones[bone_ids[i-1]]
 			nextLength = magnitude(bone.Pos.Sub(nextBone.Pos))
 		}
 
@@ -378,16 +385,16 @@ func fabrik(ikFamily IkFamily, bones []Bone, target Vec2, root Vec2) {
 	//backward-reaching
 	prevPos := root
 	var prevLength float32 = 0.
-	for i := 0; i < len(ikFamily.Bone_ids); i++ {
-		bone := &bones[ikFamily.Bone_ids[i]]
+	for i := 0; i < len(bone_ids); i++ {
+		bone := &bones[bone_ids[i]]
 
 		lengthLine := Vec2{X: 0, Y: 0}
 		if i != 0 {
 			lengthLine = normalize(prevPos.Sub(bone.Pos)).Mulf(prevLength)
 		}
 
-		if i != len(ikFamily.Bone_ids)-1 {
-			nextBone := &bones[ikFamily.Bone_ids[i+1]]
+		if i != len(bone_ids)-1 {
+			nextBone := &bones[bone_ids[i+1]]
 			prevLength = magnitude(bone.Pos.Sub(nextBone.Pos))
 		}
 
@@ -396,15 +403,15 @@ func fabrik(ikFamily IkFamily, bones []Bone, target Vec2, root Vec2) {
 	}
 }
 
-func arc_ik(ikFamily IkFamily, bones []Bone, root Vec2, target Vec2) {
+func arc_ik(bone_ids []int, bones []Bone, root Vec2, target Vec2) {
 	dist := []float32{0}
-	maxLength := magnitude(bones[ikFamily.Bone_ids[len(ikFamily.Bone_ids)-1]].Pos.Sub(root))
+	maxLength := magnitude(bones[bone_ids[len(bone_ids)-1]].Pos.Sub(root))
 	currLength := float32(0)
-	for f := range ikFamily.Bone_ids {
+	for f := range bone_ids {
 		if f == 0 {
 			continue
 		}
-		length := magnitude(bones[ikFamily.Bone_ids[f]].Pos.Sub(bones[ikFamily.Bone_ids[f-1]].Pos))
+		length := magnitude(bones[bone_ids[f]].Pos.Sub(bones[bone_ids[f-1]].Pos))
 		currLength += length
 		dist = append(dist, float32(currLength)/float32(maxLength))
 	}
@@ -415,19 +422,19 @@ func arc_ik(ikFamily IkFamily, bones []Bone, root Vec2, target Vec2) {
 	peak := maxLength / float32(baseMag)
 	valley := float32(baseMag) / maxLength
 
-	for f := range ikFamily.Bone_ids {
+	for f := range bone_ids {
 		if f == 0 {
 			continue
 		}
 
 		angle := float32(math.Sin(float64(dist[f] * 3.14)))
-		bones[ikFamily.Bone_ids[f]].Pos = Vec2{
-			X: bones[ikFamily.Bone_ids[f]].Pos.X * valley,
+		bones[bone_ids[f]].Pos = Vec2{
+			X: bones[bone_ids[f]].Pos.X * valley,
 			Y: root.Y + (1-peak)*angle*float32(baseMag),
 		}
 
-		rotated := rotate(bones[ikFamily.Bone_ids[f]].Pos.Sub(root), baseAngle)
-		bones[ikFamily.Bone_ids[f]].Pos = rotated.Add(root)
+		rotated := rotate(bones[bone_ids[f]].Pos.Sub(root), baseAngle)
+		bones[bone_ids[f]].Pos = rotated.Add(root)
 	}
 }
 
@@ -441,46 +448,48 @@ func findBone(bones []Bone, id int) (Bone, error) {
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
 }
 
+func getPrevKeyframe(keyframes []Keyframe, frame int, element int, boneId int) int {
+	prevKf := -1
+	for k, kf := range keyframes {
+		if kf.Frame < frame && kf.Bone_id == boneId && kf.Element == element {
+			prevKf = k
+		}
+	}
+	return prevKf
+}
+
 func interpolateKeyframes(
 	field *float32,
-	element string,
+	element int,
 	keyframes []Keyframe,
 	frame int,
 	boneId int,
 	blendFrames int,
 ) {
-	var prevKf Keyframe
-	var nextKf Keyframe
-	prevKf.Frame = -1
-	nextKf.Frame = -1
+	prevKf := getPrevKeyframe(keyframes, frame, element, boneId)
+	nextKf := -1
 
-	for _, kf := range keyframes {
-		if kf.Frame < frame && kf.Bone_id == boneId && kf.Element == element {
-			prevKf = kf
-		}
-	}
-
-	for _, kf := range keyframes {
+	for k, kf := range keyframes {
 		if kf.Frame >= frame && kf.Bone_id == boneId && kf.Element == element {
-			nextKf = kf
+			nextKf = k
 			break
 		}
 	}
 
-	if prevKf.Frame == -1 {
+	if prevKf == -1 {
 		prevKf = nextKf
-	} else if nextKf.Frame == -1 {
+	} else if nextKf == -1 {
 		nextKf = prevKf
 	}
 
-	if prevKf.Frame == -1 && nextKf.Frame == -1 {
+	if prevKf == -1 && nextKf == -1 {
 		return
 	}
 
-	totalFrames := nextKf.Frame - prevKf.Frame
-	currentFrame := frame - prevKf.Frame
+	totalFrames := int(keyframes[nextKf].Frame - keyframes[prevKf].Frame)
+	currentFrame := frame - int(keyframes[prevKf].Frame)
 
-	result := interpolate(currentFrame, totalFrames, prevKf.Value, nextKf.Value)
+	result := interpolate(currentFrame, totalFrames, keyframes[prevKf].Value, keyframes[nextKf].Value)
 	*field = interpolate(currentFrame, blendFrames, *field, result)
 }
 
