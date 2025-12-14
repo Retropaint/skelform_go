@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -102,7 +103,7 @@ type Bone struct {
 	Id        int
 	Name      string
 	Parent_id int
-	Tex_idx   int
+	Tex       string
 	Style_ids []int
 
 	Ik_family_id      int
@@ -125,15 +126,17 @@ type Bone struct {
 
 	Parent_rot float32
 
-	Init_rot   float32
-	Init_scale Vec2
-	Init_pos   Vec2
+	Init_rot           float32
+	Init_scale         Vec2
+	Init_pos           Vec2
+	Init_ik_constraint int
 }
 
 type Texture struct {
-	Name   string
-	Size   Vec2
-	Offset Vec2
+	Name     string
+	Size     Vec2
+	Offset   Vec2
+	AtlasIdx int
 }
 
 type Style struct {
@@ -151,60 +154,68 @@ type Armature struct {
 	Styles       []Style
 }
 
-func Load(path string) (Armature, image.Image) {
+func Load(path string) (Armature, []image.Image) {
 	zip, _ := zip.OpenReader(path)
 
 	defer zip.Close()
 
 	var armature Armature
-	var texture image.Image
+	var textures []image.Image
 
 	for _, f := range zip.File {
 		file, _ := f.Open()
 		if f.Name == "armature.json" {
 			bytes, _ := io.ReadAll(file)
 			json.Unmarshal(bytes, &armature)
-		} else if f.Name == "textures.png" {
-			texture, _ = png.Decode(file)
+		} else if strings.Contains(f.Name, "atlas") {
+			tex, _ := png.Decode(file)
+			textures = append(textures, tex)
 		}
 	}
 
-	return armature, texture
+	return armature, textures
 }
 
-func Animate(bones []Bone, animation Animation, frame int, blendFrames int) {
-	kf := animation.Keyframes
-	bf := blendFrames
-	ikf := interpolateKeyframes
-	for b := range bones {
-		bone := &bones[b]
-		ikf(&bone.Pos.X, 0, kf, frame, bone.Id, bf)
-		ikf(&bone.Pos.Y, 1, kf, frame, bone.Id, bf)
-		ikf(&bone.Rot, 2, kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.X, 3, kf, frame, bone.Id, bf)
-		ikf(&bone.Scale.Y, 4, kf, frame, bone.Id, bf)
-		prev := getPrevKeyframe(kf, frame, 7, bone.Id)
-		if prev != -1 {
-			bone.Ik_constraint = int(kf[prev].Value)
+func Animate(armature *Armature, animations []Animation, frames []int, blendFrames []int) {
+	for i := range animations {
+		kf := animations[i].Keyframes
+		bf := blendFrames[i]
+		frame := frames[i]
+		ikf := interpolateKeyframes
+		for b := range armature.Bones {
+			bone := &armature.Bones[b]
+			ikf(&bone.Pos.X, 0, kf, frame, bone.Id, bf)
+			ikf(&bone.Pos.Y, 1, kf, frame, bone.Id, bf)
+			ikf(&bone.Rot, 2, kf, frame, bone.Id, bf)
+			ikf(&bone.Scale.X, 3, kf, frame, bone.Id, bf)
+			ikf(&bone.Scale.Y, 4, kf, frame, bone.Id, bf)
+			prev := getPrevKeyframe(kf, frame, 7, bone.Id)
+			if prev != -1 {
+				bone.Ik_constraint = int(kf[prev].Value)
+			}
 		}
+	}
+
+	for b := range armature.Bones {
+		ResetBone(&armature.Bones[b], animations, frames[0], blendFrames[0])
 	}
 }
 
 // Reset bones back to default states, if they haven't been animated.
 // Must be called after `Animate()` with the same animations provided.
 // `frame` must be first anim frame.
-func ResetBones(bones []Bone, anims []Animation, frame int, blendFrames int) {
-	for b := range bones {
-		bone := &bones[b]
-		resetBoneElement(&bone.Pos.X, bone.Init_pos.X, 0, bone.Id, frame, blendFrames, anims)
-		resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, 1, bone.Id, frame, blendFrames, anims)
-		resetBoneElement(&bone.Rot, bone.Init_rot, 2, bone.Id, frame, blendFrames, anims)
-		resetBoneElement(&bone.Scale.X, bone.Init_scale.X, 3, bone.Id, frame, blendFrames, anims)
-		resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, 4, bone.Id, frame, blendFrames, anims)
+func ResetBone(bone *Bone, anims []Animation, frame int, blendFrames int) {
+	resetBoneElement(&bone.Pos.X, bone.Init_pos.X, 0, bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, 1, bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Rot, bone.Init_rot, 2, bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Scale.X, bone.Init_scale.X, 3, bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, 4, bone.Id, frame, blendFrames, anims)
+	if shouldResetElement(anims, bone.Id, 7) {
+		bone.Ik_constraint = bone.Init_ik_constraint
 	}
 }
 
-func attemptReset(anims []Animation, boneId int, el int) bool {
+func shouldResetElement(anims []Animation, boneId int, el int) bool {
 	for a := range anims {
 		anim := &anims[a]
 		for _, kf := range anim.Keyframes {
@@ -217,7 +228,7 @@ func attemptReset(anims []Animation, boneId int, el int) bool {
 }
 
 func resetBoneElement(value *float32, init float32, el int, boneId int, frame int, blendFrames int, anims []Animation) {
-	shouldReset := attemptReset(anims, boneId, el)
+	shouldReset := shouldResetElement(anims, boneId, el)
 	if shouldReset {
 		*value = interpolate(frame, blendFrames, *value, init)
 	}
@@ -246,6 +257,28 @@ func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 	}
 
 	return bones
+}
+
+func Construct(armature *Armature) []Bone {
+	var inheritedBones []Bone
+	for _, bone := range armature.Bones {
+		inheritedBones = append(inheritedBones, bone)
+	}
+	Inheritance(inheritedBones, make(map[uint]float32))
+	ikRots := InverseKinematics(inheritedBones, armature.Ik_root_ids)
+
+	var finalBones []Bone
+	for _, bone := range armature.Bones {
+		finalBones = append(finalBones, bone)
+		finalBones[len(finalBones)-1].Vertices = nil
+		for _, vert := range bone.Vertices {
+			finalBones[len(finalBones)-1].Vertices = append(finalBones[len(finalBones)-1].Vertices, vert)
+		}
+	}
+	Inheritance(finalBones, ikRots)
+	ConstructVerts(finalBones)
+
+	return finalBones
 }
 
 func ConstructVerts(bones []Bone) {
@@ -305,6 +338,30 @@ func inheritVert(pos Vec2, bone Bone) Vec2 {
 	return pos
 }
 
+func SetupBoneTextures(bones []Bone, styles []Style) map[uint]Texture {
+	finalTextures := make(map[uint]Texture)
+
+	for _, bone := range bones {
+		for _, style := range styles {
+			found := false
+			// find texture
+			for _, tex := range style.Textures {
+				if tex.Name == bone.Tex {
+					found = true
+					finalTextures[uint(bone.Id)] = tex
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+
+	return finalTextures
+}
+
 func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
 	rotMap := make(map[uint]float32)
 
@@ -319,9 +376,11 @@ func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
 		target := bones[family.Ik_target_id].Pos
 
 		switch family.Ik_mode {
-		case 0:
-			fabrik(family.Ik_bone_ids, bones, target, root)
-		case 1:
+		case 0: // FABRIK
+			for range 10 {
+				fabrik(family.Ik_bone_ids, bones, target, root)
+			}
+		case 1: // Arc
 			arc_ik(family.Ik_bone_ids, bones, root, target)
 		}
 
@@ -528,4 +587,12 @@ func TimeFrame(animation Animation, time time.Duration, reverse bool, loop bool)
 	frame = FormatFrame(animation, frame, reverse, loop)
 
 	return frame
+}
+
+func CheckBoneFlip(bone *Bone, scale Vec2) {
+	either := scale.X < 0 || scale.Y < 0
+	both := scale.X < 0 && scale.Y < 0
+	if either && !both {
+		bone.Rot = -bone.Rot
+	}
 }
