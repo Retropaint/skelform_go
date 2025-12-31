@@ -579,6 +579,7 @@ func FormatFrame(animation Animation, frame int, reverse bool, loop bool) int {
 func TimeFrame(animation Animation, time time.Duration, reverse bool, loop bool) int {
 	fps := animation.Fps
 
+
 	frametime := 1. / float32(fps)
 	frame := int(float32(time.Milliseconds()) / frametime / 1000)
 
