@@ -124,8 +124,6 @@ type Bone struct {
 	Indices  []int
 	Binds    []Bind
 
-	Parent_rot float32
-
 	Init_rot           float32
 	Init_scale         Vec2
 	Init_pos           Vec2
