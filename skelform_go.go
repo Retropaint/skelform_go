@@ -68,12 +68,13 @@ func rotate(point Vec2, rot float64) Vec2 {
 }
 
 type Keyframe struct {
-	Frame       int
-	Bone_id     int
-	Element_str string
-	Element     int
-	Value       float32
-	Transition  string
+	Frame        int
+	Bone_id      int
+	Element      string
+	Value        float32
+	Value_str    string
+	Start_handle float32
+	End_handle   float32
 }
 
 type Animation struct {
@@ -106,13 +107,11 @@ type Bone struct {
 	Tex       string
 	Style_ids []int
 
-	Ik_family_id      int
-	Ik_constraint_str string
-	Ik_constraint     int
-	Ik_mode_str       string
-	Ik_mode           int
-	Ik_target_id      int
-	Ik_bone_ids       []int
+	Ik_family_id  int
+	Ik_constraint string
+	Ik_mode       string
+	Ik_target_id  int
+	Ik_bone_ids   []int
 
 	Rot    float32
 	Scale  Vec2
@@ -127,7 +126,7 @@ type Bone struct {
 	Init_rot           float32
 	Init_scale         Vec2
 	Init_pos           Vec2
-	Init_ik_constraint int
+	Init_ik_constraint string
 }
 
 type Texture struct {
@@ -182,14 +181,14 @@ func Animate(armature *Armature, animations []Animation, frames []int, blendFram
 		ikf := interpolateKeyframes
 		for b := range armature.Bones {
 			bone := &armature.Bones[b]
-			ikf(&bone.Pos.X, 0, kf, frame, bone.Id, bf)
-			ikf(&bone.Pos.Y, 1, kf, frame, bone.Id, bf)
-			ikf(&bone.Rot, 2, kf, frame, bone.Id, bf)
-			ikf(&bone.Scale.X, 3, kf, frame, bone.Id, bf)
-			ikf(&bone.Scale.Y, 4, kf, frame, bone.Id, bf)
-			prev := getPrevKeyframe(kf, frame, 7, bone.Id)
+			ikf(&bone.Pos.X, "PositionX", kf, frame, bone.Id, bf)
+			ikf(&bone.Pos.Y, "PositionY", kf, frame, bone.Id, bf)
+			ikf(&bone.Rot, "Rotation", kf, frame, bone.Id, bf)
+			ikf(&bone.Scale.X, "ScaleX", kf, frame, bone.Id, bf)
+			ikf(&bone.Scale.Y, "ScaleY", kf, frame, bone.Id, bf)
+			prev := getPrevKeyframe(kf, frame, "IkConstraint", bone.Id)
 			if prev != -1 {
-				bone.Ik_constraint = int(kf[prev].Value)
+				bone.Ik_constraint = kf[prev].Value_str
 			}
 		}
 	}
@@ -203,17 +202,17 @@ func Animate(armature *Armature, animations []Animation, frames []int, blendFram
 // Must be called after `Animate()` with the same animations provided.
 // `frame` must be first anim frame.
 func ResetBone(bone *Bone, anims []Animation, frame int, blendFrames int) {
-	resetBoneElement(&bone.Pos.X, bone.Init_pos.X, 0, bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, 1, bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Rot, bone.Init_rot, 2, bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Scale.X, bone.Init_scale.X, 3, bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, 4, bone.Id, frame, blendFrames, anims)
-	if shouldResetElement(anims, bone.Id, 7) {
+	resetBoneElement(&bone.Pos.X, bone.Init_pos.X, "PositionX", bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, "PositionY", bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Rot, bone.Init_rot, "Rotation", bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Scale.X, bone.Init_scale.X, "ScaleX", bone.Id, frame, blendFrames, anims)
+	resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, "ScaleY", bone.Id, frame, blendFrames, anims)
+	if shouldResetElement(anims, bone.Id, "IkConstraint") {
 		bone.Ik_constraint = bone.Init_ik_constraint
 	}
 }
 
-func shouldResetElement(anims []Animation, boneId int, el int) bool {
+func shouldResetElement(anims []Animation, boneId int, el string) bool {
 	for a := range anims {
 		anim := &anims[a]
 		for _, kf := range anim.Keyframes {
@@ -225,7 +224,7 @@ func shouldResetElement(anims []Animation, boneId int, el int) bool {
 	return true
 }
 
-func resetBoneElement(value *float32, init float32, el int, boneId int, frame int, blendFrames int, anims []Animation) {
+func resetBoneElement(value *float32, init float32, el string, boneId int, frame int, blendFrames int, anims []Animation) {
 	shouldReset := shouldResetElement(anims, boneId, el)
 	if shouldReset {
 		*value = interpolate(frame, blendFrames, *value, init)
@@ -374,11 +373,11 @@ func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
 		target := bones[family.Ik_target_id].Pos
 
 		switch family.Ik_mode {
-		case 0: // FABRIK
+		case "FABRIK":
 			for range 10 {
 				fabrik(family.Ik_bone_ids, bones, target, root)
 			}
-		case 1: // Arc
+		case "Arc":
 			arc_ik(family.Ik_bone_ids, bones, root, target)
 		}
 
@@ -399,8 +398,8 @@ func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
 		dir := jointDir.X*baseDir.Y - baseDir.X*jointDir.Y
 		baseAngle := math.Atan2(float64(baseDir.Y), float64(baseDir.X))
 
-		cw := family.Ik_constraint == 1 && dir > 0
-		ccw := family.Ik_constraint == 2 && dir < 0
+		cw := family.Ik_constraint == "Clockwise" && dir > 0
+		ccw := family.Ik_constraint == "CounterClockwise" && dir < 0
 		if cw || ccw {
 			for _, id := range family.Ik_bone_ids {
 				bones[id].Rot = -bones[id].Rot + float32(baseAngle*2)
@@ -505,7 +504,7 @@ func findBone(bones []Bone, id int) (Bone, error) {
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
 }
 
-func getPrevKeyframe(keyframes []Keyframe, frame int, element int, boneId int) int {
+func getPrevKeyframe(keyframes []Keyframe, frame int, element string, boneId int) int {
 	prevKf := -1
 	for k, kf := range keyframes {
 		if kf.Frame < frame && kf.Bone_id == boneId && kf.Element == element {
@@ -517,7 +516,7 @@ func getPrevKeyframe(keyframes []Keyframe, frame int, element int, boneId int) i
 
 func interpolateKeyframes(
 	field *float32,
-	element int,
+	element string,
 	keyframes []Keyframe,
 	frame int,
 	boneId int,
