@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -84,9 +85,10 @@ type Animation struct {
 }
 
 type Vertex struct {
-	Pos Vec2
-	Uv  Vec2
-	Id  int
+	Pos      Vec2
+	Init_pos Vec2
+	Uv       Vec2
+	Id       int
 }
 
 type BoneBindVert struct {
@@ -289,6 +291,7 @@ func ConstructVerts(bones []Bone) {
 
 		for v := range bone.Vertices {
 			vert := &bone.Vertices[v]
+			vert.Pos = vert.Init_pos
 			vert.Pos = inheritVert(vert.Pos, *bone)
 		}
 
