@@ -4,11 +4,11 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"image"
 	"image/png"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,12 +145,13 @@ type Style struct {
 }
 
 type Armature struct {
-	Version      string
-	Ik_root_ids  []int
-	Texture_size Vec2
-	Bones        []Bone
-	Animations   []Animation
-	Styles       []Style
+	Version           string
+	Ik_root_ids       []int
+	Texture_size      Vec2
+	Bones             []Bone
+	Constructed_bones []Bone
+	Animations        []Animation
+	Styles            []Style
 }
 
 func Load(path string) (Armature, []image.Image) {
@@ -233,7 +234,18 @@ func resetBoneElement(value *float32, init float32, el string, boneId int, frame
 	}
 }
 
-func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
+func resetInheritance(bones []Bone, constructedBones []Bone) {
+	for b := range constructedBones {
+		constBone := &constructedBones[b]
+		bone := &bones[b]
+
+		constBone.Pos = bone.Pos
+		constBone.Scale = bone.Scale
+		constBone.Rot = bone.Rot
+	}
+}
+
+func inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 	for b := range bones {
 		bone := &bones[b]
 
@@ -258,40 +270,39 @@ func Inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 	return bones
 }
 
-func Construct(armature *Armature) []Bone {
-	var inheritedBones []Bone
-	for _, bone := range armature.Bones {
-		inheritedBones = append(inheritedBones, bone)
-	}
-	Inheritance(inheritedBones, make(map[uint]float32))
-	ikRots := InverseKinematics(inheritedBones, armature.Ik_root_ids)
-
-	var finalBones []Bone
-	for _, bone := range armature.Bones {
-		finalBones = append(finalBones, bone)
-		finalBones[len(finalBones)-1].Vertices = nil
-		for _, vert := range bone.Vertices {
-			finalBones[len(finalBones)-1].Vertices = append(finalBones[len(finalBones)-1].Vertices, vert)
+func Construct(armature *Armature) {
+	if len(armature.Constructed_bones) == 0 {
+		for _, bone := range armature.Bones {
+			armature.Constructed_bones = append(armature.Constructed_bones, bone)
 		}
+	} else {
+		sort.Slice(armature.Constructed_bones, func(i, j int) bool {
+			return armature.Constructed_bones[i].Id < armature.Constructed_bones[j].Id
+		})
 	}
-	Inheritance(finalBones, ikRots)
-	ConstructVerts(finalBones)
 
-	return finalBones
+	resetInheritance(armature.Bones, armature.Constructed_bones)
+	inheritance(armature.Constructed_bones, make(map[uint]float32))
+
+	ikRots := InverseKinematics(armature.Constructed_bones, armature.Ik_root_ids)
+
+	resetInheritance(armature.Bones, armature.Constructed_bones)
+	inheritance(armature.Constructed_bones, ikRots)
+
+	ConstructVerts(armature.Constructed_bones)
 }
 
 func ConstructVerts(bones []Bone) {
 	for b := range bones {
 		bone := &bones[b]
 
-		var initVertPos []Vec2
-		for _, vert := range bone.Vertices {
-			initVertPos = append(initVertPos, vert.Pos)
-		}
-
 		for v := range bone.Vertices {
 			vert := &bone.Vertices[v]
+
+			// reset vertex position
 			vert.Pos = vert.Init_pos
+
+			// inherit bone's properties into vertex
 			vert.Pos = inheritVert(vert.Pos, *bone)
 		}
 
@@ -303,18 +314,23 @@ func ConstructVerts(bones []Bone) {
 			bindBone, _ := findBone(bones, bind.Bone_id)
 
 			for _, bindVert := range bind.Verts {
+				// non-pathing bind
 				if !bind.Is_path {
 					vert := &bone.Vertices[bindVert.Id]
-					endPos := inheritVert(initVertPos[bindVert.Id], bindBone).Sub(vert.Pos)
+					endPos := inheritVert(vert.Init_pos, bindBone).Sub(vert.Pos)
 					vert.Pos = vert.Pos.Add(endPos.Mulf(bindVert.Weight))
 					continue
 				}
 
+				// pathing bind
+
+				// get previous and next bind bone (if they exist)
 				prev := int(math.Max(float64(bi-1), 0))
 				next := int(math.Min(float64(bi+1), float64(len(bone.Binds)-1)))
 				prevBindBone, _ := findBone(bones, bone.Binds[prev].Bone_id)
 				nextBindBone, _ := findBone(bones, bone.Binds[next].Bone_id)
 
+				// get normal line along the 3 binds
 				prevDir := bindBone.Pos.Sub(prevBindBone.Pos)
 				nextDir := nextBindBone.Pos.Sub(bindBone.Pos)
 				prevNormal := normalize(Vec2{-prevDir.Y, prevDir.X})
@@ -322,8 +338,9 @@ func ConstructVerts(bones []Bone) {
 				average := prevNormal.Add(nextNormal)
 				normalAngle := math.Atan2(float64(average.Y), float64(average.X))
 
+				// move vertex along the surface
 				vert := &bone.Vertices[bindVert.Id]
-				vert.Pos = initVertPos[bindVert.Id].Add(bindBone.Pos)
+				vert.Pos = vert.Init_pos.Add(bindBone.Pos)
 				rotated := rotate(vert.Pos.Sub(bindBone.Pos), normalAngle)
 				vert.Pos = bindBone.Pos.Add(rotated.Mulf(bindVert.Weight))
 			}
