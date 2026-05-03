@@ -74,8 +74,9 @@ type Keyframe struct {
 	Element      string
 	Value        float32
 	Value_str    string
-	Start_handle float32
-	End_handle   float32
+	Start_handle Vec2
+	End_handle   Vec2
+	Next_kf      int
 }
 
 type Animation struct {
@@ -135,6 +136,7 @@ type Bone struct {
 	Pos    Vec2
 	Pivot  Vec2
 	Zindex float32
+	Hidden bool
 
 	Vertices []Vertex
 	Indices  []int
@@ -191,63 +193,102 @@ func Load(path string) (Armature, []image.Image) {
 	return armature, textures
 }
 
-func Animate(armature *Armature, animations []Animation, frames []int, blendFrames []int) {
-	for i := range animations {
-		kf := animations[i].Keyframes
-		bf := blendFrames[i]
-		frame := frames[i]
-		ikf := interpolateKeyframes
-		for b := range armature.Bones {
-			bone := &armature.Bones[b]
-			ikf(&bone.Pos.X, "PositionX", kf, frame, bone.Id, bf)
-			ikf(&bone.Pos.Y, "PositionY", kf, frame, bone.Id, bf)
-			ikf(&bone.Rot, "Rotation", kf, frame, bone.Id, bf)
-			ikf(&bone.Scale.X, "ScaleX", kf, frame, bone.Id, bf)
-			ikf(&bone.Scale.Y, "ScaleY", kf, frame, bone.Id, bf)
-			prev := getPrevKeyframe(kf, frame, "IkConstraint", bone.Id)
-			if prev != -1 {
-				bone.Ik_constraint = kf[prev].Value_str
+func Animate(armature *Armature, animations []Animation, frames []int, smoothFrames []int) {
+	elementMap := make(map[int][]string)
+	for a := range animations {
+		for k := range animations[a].Keyframes {
+			kf := animations[a].Keyframes[k]
+
+			// only prev keyframes are considered
+			if kf.Frame > frames[a] {
+				break
+			}
+
+			if kf.Next_kf == -1 {
+				kf.Next_kf = k
+			}
+			nextKf := animations[a].Keyframes[kf.Next_kf]
+
+			// this is a redundant keyframe if the next one is also before this frame
+			if nextKf.Frame < frames[a] && kf.Next_kf != k {
+				continue
+			}
+
+			bone := &armature.Bones[kf.Bone_id]
+
+			c1 := string(kf.Element[0])
+			c2 := string(kf.Element[len(kf.Element)-1])
+			if c1 == "P" && c2 == "X" {
+				bone.Pos.X = interpolateKeyframes(bone.Pos.X, kf, nextKf, frames[a], smoothFrames[a])
+			}
+			if c1 == "P" && c2 == "Y" {
+				bone.Pos.Y = interpolateKeyframes(bone.Pos.Y, kf, nextKf, frames[a], smoothFrames[a])
+			}
+			if c1 == "R" && c2 == "n" {
+				bone.Rot = interpolateKeyframes(bone.Rot, kf, nextKf, frames[a], smoothFrames[a])
+			}
+			if c1 == "S" && c2 == "X" {
+				bone.Scale.X = interpolateKeyframes(bone.Scale.X, kf, nextKf, frames[a], smoothFrames[a])
+			}
+			if c1 == "S" && c2 == "Y" {
+				bone.Scale.Y = interpolateKeyframes(bone.Scale.Y, kf, nextKf, frames[a], smoothFrames[a])
+			}
+			if c1 == "H" && c2 == "n" {
+				bone.Hidden = kf.Value == 1
+			}
+
+			// add this bone and element to the element map.
+			// will be used to check if bones should be reset later
+			if _, has := elementMap[kf.Bone_id]; !has {
+				elementMap[kf.Bone_id] = []string{}
+			}
+			hasEl := false
+			for e := range elementMap[kf.Bone_id] {
+				if elementMap[kf.Bone_id][e] == kf.Element {
+					hasEl = true
+					break
+				}
+			}
+			if !hasEl {
+				elementMap[kf.Bone_id] = append(elementMap[kf.Bone_id], kf.Element)
 			}
 		}
 	}
 
-	for b := range armature.Bones {
-		ResetBone(&armature.Bones[b], animations, frames[0], blendFrames[0])
-	}
-}
-
-// Reset bones back to default states, if they haven't been animated.
-// Must be called after `Animate()` with the same animations provided.
-// `frame` must be first anim frame.
-func ResetBone(bone *Bone, anims []Animation, frame int, blendFrames int) {
-	resetBoneElement(&bone.Pos.X, bone.Init_pos.X, "PositionX", bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Pos.Y, bone.Init_pos.Y, "PositionY", bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Rot, bone.Init_rot, "Rotation", bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Scale.X, bone.Init_scale.X, "ScaleX", bone.Id, frame, blendFrames, anims)
-	resetBoneElement(&bone.Scale.Y, bone.Init_scale.Y, "ScaleY", bone.Id, frame, blendFrames, anims)
-	if shouldResetElement(anims, bone.Id, "IkConstraint") {
-		bone.Ik_constraint = bone.Init_ik_constraint
-	}
-}
-
-func shouldResetElement(anims []Animation, boneId int, el string) bool {
-	for a := range anims {
-		anim := &anims[a]
-		for _, kf := range anim.Keyframes {
-			if kf.Bone_id == boneId && kf.Element == el {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func resetBoneElement(value *float32, init float32, el string, boneId int, frame int, blendFrames int, anims []Animation) {
 	z := Vec2{0, 0}
-	shouldReset := shouldResetElement(anims, boneId, el)
-	if shouldReset {
-		*value = interpolate(uint(frame), uint(blendFrames), *value, init, z, z)
+	var elements []string
+	for b := range armature.Bones {
+		bone := &armature.Bones[b]
+		elements = []string{}
+		if _, has := elementMap[b]; has {
+			elements = elementMap[b]
+		}
+		if !isAnimated("PositionX", elements) {
+			bone.Pos.X = interpolate(uint(frames[0]), uint(smoothFrames[0]), bone.Pos.X, bone.Init_pos.X, z, z)
+		}
+		if !isAnimated("PositionY", elements) {
+			bone.Pos.Y = interpolate(uint(frames[0]), uint(smoothFrames[0]), bone.Pos.Y, bone.Init_pos.Y, z, z)
+		}
+		if !isAnimated("Rotation", elements) {
+			bone.Rot = interpolate(uint(frames[0]), uint(smoothFrames[0]), bone.Rot, bone.Init_rot, z, z)
+		}
+		if !isAnimated("ScaleX", elements) {
+			bone.Scale.X = interpolate(uint(frames[0]), uint(smoothFrames[0]), bone.Scale.X, bone.Init_scale.X, z, z)
+		}
+		if !isAnimated("ScaleY", elements) {
+			bone.Scale.Y = interpolate(uint(frames[0]), uint(smoothFrames[0]), bone.Scale.Y, bone.Init_scale.Y, z, z)
+		}
 	}
+
+}
+
+func isAnimated(target string, elements []string) bool {
+	for _, str := range elements {
+		if target == str {
+			return true
+		}
+	}
+	return false
 }
 
 func resetInheritance(bones []Bone, constructedBones []Bone) {
@@ -269,7 +310,7 @@ func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) [
 			parent, _ := findBone(bones, bone.Parent_id)
 
 			orbit_rot := bones[bones[b].Parent_id].Rot
-			// apply orbital difference, if rotation resistance physics is active
+			// apply orbital difference, if sway is active
 			if len(armature_bones) > 0 && armature_bones[b].Phys_sway > 0. {
 				orbit_rot -= armature_bones[b].Phys_global_orbit_diff
 			}
@@ -458,16 +499,17 @@ func Construct(armature *Armature) {
 		})
 	}
 
+	// 1st inheritance pass
 	resetInheritance(armature.Bones, armature.Constructed_bones)
 	inheritance(armature.Constructed_bones, make(map[uint]float32), []Bone{})
 
+	// 2nd inheritance pass with IK
 	ikRots := InverseKinematics(armature.Constructed_bones, armature.Ik_root_ids)
-
 	resetInheritance(armature.Bones, armature.Constructed_bones)
 	inheritance(armature.Constructed_bones, ikRots, []Bone{})
 
+	// 3rd inheritance pass with physics
 	simulatePhysics(armature)
-
 	resetInheritance(armature.Bones, armature.Constructed_bones)
 	inheritance(armature.Constructed_bones, ikRots, armature.Bones)
 
@@ -717,39 +759,12 @@ func getPrevKeyframe(keyframes []Keyframe, frame int, element string, boneId int
 }
 
 func interpolateKeyframes(
-	field *float32,
-	element string,
-	keyframes []Keyframe,
-	frame int,
-	boneId int,
-	blendFrames int,
-) {
-	prevKf := getPrevKeyframe(keyframes, frame, element, boneId)
-	nextKf := -1
-
-	for k, kf := range keyframes {
-		if kf.Frame >= frame && kf.Bone_id == boneId && kf.Element == element {
-			nextKf = k
-			break
-		}
-	}
-
-	if prevKf == -1 {
-		prevKf = nextKf
-	} else if nextKf == -1 {
-		nextKf = prevKf
-	}
-
-	if prevKf == -1 && nextKf == -1 {
-		return
-	}
-
-	totalFrames := int(keyframes[nextKf].Frame - keyframes[prevKf].Frame)
-	currentFrame := frame - int(keyframes[prevKf].Frame)
-
-	z := Vec2{0, 0}
-	result := interpolate(uint(currentFrame), uint(totalFrames), keyframes[prevKf].Value, keyframes[nextKf].Value, z, z)
-	*field = interpolate(uint(currentFrame), uint(blendFrames), *field, result, z, z)
+	field float32, prevKf Keyframe, nextKf Keyframe, frame int, smoothFrame int,
+) float32 {
+	totalFrames := uint(nextKf.Frame - prevKf.Frame)
+	currentFrame := uint(frame - prevKf.Frame)
+	result := interpolate(currentFrame, totalFrames, prevKf.Value, nextKf.Value, nextKf.Start_handle, nextKf.End_handle)
+	return interpolate(currentFrame, uint(smoothFrame), field, result, Vec2{X: 0, Y: 0}, Vec2{X: 0, Y: 0})
 }
 
 // Apply frame effects based on an animation.
