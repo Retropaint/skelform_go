@@ -115,6 +115,21 @@ type Bone struct {
 	Ik_target_id  int
 	Ik_bone_ids   []int
 
+	Has_physics            bool
+	Phys_global_pos        Vec2
+	Phys_pos_damping       float32
+	Phys_pos_ratio         float32
+	Phys_global_rot        float32
+	Phys_global_orbit      float32
+	Phys_global_orbit_diff float32
+	Phys_global_orbit_vel  float32
+	Phys_rot_damping       float32
+	Phys_sway              float32
+	Phys_rot_bounce        float32
+	Phys_global_scale      Vec2
+	Phys_scale_damping     float32
+	Phys_scale_ratio       float32
+
 	Rot    float32
 	Scale  Vec2
 	Pos    Vec2
@@ -228,9 +243,10 @@ func shouldResetElement(anims []Animation, boneId int, el string) bool {
 }
 
 func resetBoneElement(value *float32, init float32, el string, boneId int, frame int, blendFrames int, anims []Animation) {
+	z := Vec2{0, 0}
 	shouldReset := shouldResetElement(anims, boneId, el)
 	if shouldReset {
-		*value = interpolate(frame, blendFrames, *value, init)
+		*value = interpolate(uint(frame), uint(blendFrames), *value, init, z, z)
 	}
 }
 
@@ -245,19 +261,24 @@ func resetInheritance(bones []Bone, constructedBones []Bone) {
 	}
 }
 
-func inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
+func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) []Bone {
 	for b := range bones {
 		bone := &bones[b]
 
 		if bone.Parent_id != -1 {
 			parent, _ := findBone(bones, bone.Parent_id)
 
-			bone.Rot += parent.Rot
+			orbit_rot := bones[bones[b].Parent_id].Rot
+			// apply orbital difference, if rotation resistance physics is active
+			if len(armature_bones) > 0 && armature_bones[b].Phys_sway > 0. {
+				orbit_rot -= armature_bones[b].Phys_global_orbit_diff
+			}
+			bone.Rot += orbit_rot
 
 			bone.Scale = bone.Scale.Mul(parent.Scale)
 			bone.Pos = bone.Pos.Mul(parent.Scale)
 
-			bone.Pos = rotate(bone.Pos, float64(parent.Rot))
+			bone.Pos = rotate(bone.Pos, float64(orbit_rot))
 
 			bone.Pos = bone.Pos.Add(parent.Pos)
 		}
@@ -265,9 +286,165 @@ func inheritance(bones []Bone, ikRots map[uint]float32) []Bone {
 		if rot, ok := ikRots[uint(b)]; ok {
 			bones[b].Rot = rot
 		}
+
+		// apply physics, if armature_bones is provided
+		if len(armature_bones) > 0 {
+			if armature_bones[b].Phys_rot_damping > 0. {
+				bones[b].Rot = armature_bones[b].Phys_global_rot
+			}
+			if armature_bones[b].Phys_pos_damping > 0. {
+				bones[b].Pos = armature_bones[b].Phys_global_pos
+			}
+			if armature_bones[b].Phys_scale_damping > 0. {
+				bones[b].Scale = armature_bones[b].Phys_global_scale
+			}
+		}
 	}
 
 	return bones
+}
+
+func simulatePhysics(armature *Armature) {
+	for b := range armature.Bones {
+		s := Vec2{X: 0.3, Y: 0.3}
+		e := Vec2{X: 0.6, Y: 0.6}
+		arm_bone := &armature.Bones[b]
+		const_bone := &armature.Constructed_bones[b]
+		prev_pos := arm_bone.Phys_global_pos
+
+		// interpolate position
+		if arm_bone.Phys_pos_damping > 0. || arm_bone.Phys_sway > 0. {
+			phys_pos := &arm_bone.Phys_global_pos
+			dampingX := arm_bone.Phys_pos_damping
+			dampingY := arm_bone.Phys_pos_damping
+
+			// ratio
+			if arm_bone.Phys_pos_ratio < 0. {
+				dampingY *= 1. - float32(math.Abs(float64(arm_bone.Phys_pos_ratio)))
+			} else if arm_bone.Phys_pos_ratio > 0. {
+				dampingX *= 1. - arm_bone.Phys_pos_ratio
+			}
+
+			phys_pos.X = interpolate(2, uint(dampingX), phys_pos.X, const_bone.Pos.X, s, e)
+			phys_pos.Y = interpolate(2, uint(dampingY), phys_pos.Y, const_bone.Pos.Y, s, e)
+		}
+
+		// interpolate scale
+		if arm_bone.Phys_scale_damping > 0. {
+			phys_scale := &arm_bone.Phys_global_scale
+			dampingX := arm_bone.Phys_scale_damping
+			dampingY := arm_bone.Phys_scale_damping
+
+			// ratio
+			if arm_bone.Phys_scale_ratio < 0. {
+				dampingY *= 1. - float32(math.Abs(float64(arm_bone.Phys_scale_ratio)))
+			} else if arm_bone.Phys_scale_ratio > 0. {
+				dampingX *= 1. - arm_bone.Phys_scale_ratio
+			}
+
+			phys_scale.X = interpolate(2, uint(dampingX), phys_scale.X, const_bone.Scale.X, s, e)
+			phys_scale.Y = interpolate(2, uint(dampingY), phys_scale.Y, const_bone.Scale.Y, s, e)
+		}
+
+		// interpolate rotation
+		if arm_bone.Phys_rot_damping > 0. {
+			rot := shortest_angle_delta(arm_bone.Phys_global_rot, const_bone.Rot)
+			arm_bone.Phys_global_rot += rot / arm_bone.Phys_rot_damping
+		}
+
+		// interpolate parent orbit (rot res, bounce, etc)
+		var parent Bone
+		has_parent := false
+		for _, bone := range armature.Constructed_bones {
+			if bone.Id == const_bone.Parent_id {
+				parent = bone
+				has_parent = true
+				break
+			}
+		}
+		if arm_bone.Phys_sway > 0. && has_parent {
+			// interpolate to the angle difference between bone and parent
+			diff := normalize(const_bone.Pos.Sub(parent.Pos))
+			diff_angle := math.Atan2(float64(diff.Y), float64(diff.X))
+			rest_rot := shortest_angle_delta(arm_bone.Phys_global_orbit, float32(diff_angle))
+			// apply bounce
+			if arm_bone.Phys_rot_bounce > 0. && arm_bone.Phys_rot_bounce <= 1. {
+				rest_rot += arm_bone.Phys_global_orbit_vel / (2. - arm_bone.Phys_rot_bounce)
+				arm_bone.Phys_global_orbit_vel = rest_rot
+			}
+			arm_bone.Phys_global_orbit += rest_rot / 10.
+
+			// swing orbit based on position momentum
+			vel := normalize(arm_bone.Phys_global_pos.Sub(prev_pos))
+			angle := math.Atan2(float64(-vel.Y), float64(-vel.X))
+			vel_rot := shortest_angle_delta(arm_bone.Phys_global_orbit, float32(angle))
+			strength := magnitude(arm_bone.Phys_global_pos.Sub(prev_pos)) / 1000.
+			arm_bone.Phys_global_orbit += vel_rot * strength * arm_bone.Phys_sway
+
+			// apply difference in final angle and orbit
+			arm_bone.Phys_global_orbit_diff = float32(diff_angle) - arm_bone.Phys_global_orbit
+		}
+	}
+}
+
+func shortest_angle_delta(fro float32, to float32) float32 {
+	pi := 3.141592653589793
+	tau := pi * 2.0
+	delta := float64(to - fro)
+	for delta > pi {
+		delta -= tau
+	}
+	for delta < -pi {
+		delta += tau
+	}
+	return float32(delta)
+}
+
+func interpolate(
+	current uint,
+	max uint,
+	start_val,
+	end_val float32,
+	start_handle Vec2,
+	end_handle Vec2,
+) float32 {
+	// snapping behavior for None transition preset
+	if start_handle.Y == 999 && end_handle.Y == 999 {
+		return start_val
+	}
+	if max == 0 || current >= max {
+		return end_val
+	}
+
+	// solve for time (x axis) with Newton-Raphson
+	initial := float32(current) / float32(max)
+	t := initial
+	for range 5 {
+		x := cubic_bezier(t, start_handle.X, end_handle.X)
+		dx := cubic_bezier_derivative(t, start_handle.X, end_handle.X)
+		if math.Abs(float64(dx)) < 1e-5 {
+			break
+		}
+		t -= (x - initial) / dx
+		if t > 1 {
+			t = 1
+		} else if t < 0 {
+			t = 0
+		}
+	}
+
+	progress := cubic_bezier(t, start_handle.Y, end_handle.Y)
+	return start_val + (end_val-start_val)*progress
+}
+
+func cubic_bezier(t float32, p1 float32, p2 float32) float32 {
+	u := 1.0 - t
+	return 3.0*u*u*t*p1 + 3.0*u*t*t*p2 + t*t*t
+}
+
+func cubic_bezier_derivative(t float32, p1 float32, p2 float32) float32 {
+	u := 1.0 - t
+	return 3.0*u*u*p1 + 6.0*u*t*(p2-p1) + 3.0*t*t*(1.0-p2)
 }
 
 func Construct(armature *Armature) {
@@ -282,12 +459,17 @@ func Construct(armature *Armature) {
 	}
 
 	resetInheritance(armature.Bones, armature.Constructed_bones)
-	inheritance(armature.Constructed_bones, make(map[uint]float32))
+	inheritance(armature.Constructed_bones, make(map[uint]float32), []Bone{})
 
 	ikRots := InverseKinematics(armature.Constructed_bones, armature.Ik_root_ids)
 
 	resetInheritance(armature.Bones, armature.Constructed_bones)
-	inheritance(armature.Constructed_bones, ikRots)
+	inheritance(armature.Constructed_bones, ikRots, []Bone{})
+
+	simulatePhysics(armature)
+
+	resetInheritance(armature.Bones, armature.Constructed_bones)
+	inheritance(armature.Constructed_bones, ikRots, armature.Bones)
 
 	ConstructVerts(armature.Constructed_bones)
 }
@@ -565,17 +747,9 @@ func interpolateKeyframes(
 	totalFrames := int(keyframes[nextKf].Frame - keyframes[prevKf].Frame)
 	currentFrame := frame - int(keyframes[prevKf].Frame)
 
-	result := interpolate(currentFrame, totalFrames, keyframes[prevKf].Value, keyframes[nextKf].Value)
-	*field = interpolate(currentFrame, blendFrames, *field, result)
-}
-
-func interpolate(current int, max int, startValue float32, endValue float32) float32 {
-	if max == 0 || current > max {
-		return endValue
-	}
-	interp := float32(current) / float32(max)
-	end := endValue - startValue
-	return startValue + (end * interp)
+	z := Vec2{0, 0}
+	result := interpolate(uint(currentFrame), uint(totalFrames), keyframes[prevKf].Value, keyframes[nextKf].Value, z, z)
+	*field = interpolate(uint(currentFrame), uint(blendFrames), *field, result, z, z)
 }
 
 // Apply frame effects based on an animation.
