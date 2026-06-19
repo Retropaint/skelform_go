@@ -103,49 +103,54 @@ type Bind struct {
 	Verts   []BoneBindVert
 }
 
+type BoneInverseKinematics struct {
+	Constraint string
+	Mode       string
+	Target_id  int
+	Bone_ids   []int
+}
+
+type Visuals struct {
+	Tex      string
+	Zindex   float32
+	Vertices []Vertex
+	Indices  []int
+	Binds    []Bind
+}
+
+type Physics struct {
+	Global_pos        Vec2
+	Pos_damping       float32
+	Pos_ratio         float32
+	Global_rot        float32
+	Global_orbit      float32
+	Global_orbit_diff float32
+	Global_orbit_vel  float32
+	Rot_damping       float32
+	Sway              float32
+	Rot_bounce        float32
+	Global_scale      Vec2
+	Scale_damping     float32
+	Scale_ratio       float32
+}
+
 type Bone struct {
 	Id        int
 	Name      string
 	Parent_id int
-	Tex       string
-	Style_ids []int
-
-	Ik_family_id  int
-	Ik_constraint string
-	Ik_mode       string
-	Ik_target_id  int
-	Ik_bone_ids   []int
-
-	Has_physics            bool
-	Phys_global_pos        Vec2
-	Phys_pos_damping       float32
-	Phys_pos_ratio         float32
-	Phys_global_rot        float32
-	Phys_global_orbit      float32
-	Phys_global_orbit_diff float32
-	Phys_global_orbit_vel  float32
-	Phys_rot_damping       float32
-	Phys_sway              float32
-	Phys_rot_bounce        float32
-	Phys_global_scale      Vec2
-	Phys_scale_damping     float32
-	Phys_scale_ratio       float32
 
 	Rot    float32
 	Scale  Vec2
 	Pos    Vec2
-	Pivot  Vec2
-	Zindex float32
 	Hidden bool
 
-	Vertices []Vertex
-	Indices  []int
-	Binds    []Bind
+	Ik_family_id int
+	Visuals_id   int
+	Physics_id   int
 
-	Init_rot           float32
-	Init_scale         Vec2
-	Init_pos           Vec2
-	Init_ik_constraint string
+	Init_rot   float32
+	Init_scale Vec2
+	Init_pos   Vec2
 }
 
 type Texture struct {
@@ -162,13 +167,15 @@ type Style struct {
 }
 
 type Armature struct {
-	Version           string
-	Ik_root_ids       []int
-	Texture_size      Vec2
-	Bones             []Bone
-	Constructed_bones []Bone
-	Animations        []Animation
-	Styles            []Style
+	Version            string
+	Texture_size       Vec2
+	Bones              []Bone
+	Constructed_bones  []Bone
+	Animations         []Animation
+	Styles             []Style
+	Inverse_kinematics []BoneInverseKinematics
+	Visuals            []Visuals
+	Physics            []Physics
 }
 
 func Load(path string) (Armature, []image.Image) {
@@ -302,7 +309,7 @@ func resetInheritance(bones []Bone, constructedBones []Bone) {
 	}
 }
 
-func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) []Bone {
+func inheritance(bones []Bone, ikRots map[uint]float32, physics []Physics) []Bone {
 	for b := range bones {
 		bone := &bones[b]
 
@@ -311,8 +318,8 @@ func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) [
 
 			orbit_rot := bones[bones[b].Parent_id].Rot
 			// apply orbital difference, if sway is active
-			if len(armature_bones) > 0 && armature_bones[b].Phys_sway > 0. {
-				orbit_rot -= armature_bones[b].Phys_global_orbit_diff
+			if len(physics) > 0 && bone.Physics_id != -1 && physics[bone.Physics_id].Sway > 0. {
+				orbit_rot -= physics[bone.Physics_id].Global_orbit_diff
 			}
 			bone.Rot += orbit_rot
 
@@ -329,15 +336,16 @@ func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) [
 		}
 
 		// apply physics, if armature_bones is provided
-		if len(armature_bones) > 0 {
-			if armature_bones[b].Phys_rot_damping > 0. {
-				bones[b].Rot = armature_bones[b].Phys_global_rot
+		if len(physics) > 0 && bone.Physics_id != -1 {
+			phys := physics[bone.Physics_id]
+			if phys.Rot_damping > 0. {
+				bones[b].Rot = phys.Global_rot
 			}
-			if armature_bones[b].Phys_pos_damping > 0. {
-				bones[b].Pos = armature_bones[b].Phys_global_pos
+			if phys.Pos_damping > 0. {
+				bones[b].Pos = phys.Global_pos
 			}
-			if armature_bones[b].Phys_scale_damping > 0. {
-				bones[b].Scale = armature_bones[b].Phys_global_scale
+			if phys.Scale_damping > 0. {
+				bones[b].Scale = phys.Global_scale
 			}
 		}
 	}
@@ -345,85 +353,87 @@ func inheritance(bones []Bone, ikRots map[uint]float32, armature_bones []Bone) [
 	return bones
 }
 
-func simulatePhysics(armature *Armature) {
-	for b := range armature.Bones {
+func simulatePhysics(constructedBones []Bone, physics []Physics) {
+	for b := range constructedBones {
+		constBone := &constructedBones[b]
+		if constBone.Physics_id == -1 {
+			continue
+		}
+		phys := &physics[constBone.Physics_id]
+
 		s := Vec2{X: 0.3, Y: 0.3}
 		e := Vec2{X: 0.6, Y: 0.6}
-		arm_bone := &armature.Bones[b]
-		const_bone := &armature.Constructed_bones[b]
-		prev_pos := arm_bone.Phys_global_pos
+		prev_pos := phys.Global_pos
 
 		// interpolate position
-		if arm_bone.Phys_pos_damping > 0. || arm_bone.Phys_sway > 0. {
-			phys_pos := &arm_bone.Phys_global_pos
-			dampingX := arm_bone.Phys_pos_damping
-			dampingY := arm_bone.Phys_pos_damping
+		if phys.Pos_damping > 0. || phys.Sway > 0. {
+			dampingX := phys.Pos_damping
+			dampingY := phys.Pos_damping
 
 			// ratio
-			if arm_bone.Phys_pos_ratio < 0. {
-				dampingY *= 1. - float32(math.Abs(float64(arm_bone.Phys_pos_ratio)))
-			} else if arm_bone.Phys_pos_ratio > 0. {
-				dampingX *= 1. - arm_bone.Phys_pos_ratio
+			if phys.Pos_ratio < 0. {
+				dampingY *= 1. - float32(math.Abs(float64(phys.Pos_ratio)))
+			} else if phys.Pos_ratio > 0. {
+				dampingX *= 1. - phys.Pos_ratio
 			}
 
-			phys_pos.X = interpolate(2, uint(dampingX), phys_pos.X, const_bone.Pos.X, s, e)
-			phys_pos.Y = interpolate(2, uint(dampingY), phys_pos.Y, const_bone.Pos.Y, s, e)
+			phys.Global_pos.X = interpolate(2, uint(dampingX), phys.Global_pos.X, constBone.Pos.X, s, e)
+			phys.Global_pos.Y = interpolate(2, uint(dampingY), phys.Global_pos.Y, constBone.Pos.Y, s, e)
 		}
 
 		// interpolate scale
-		if arm_bone.Phys_scale_damping > 0. {
-			phys_scale := &arm_bone.Phys_global_scale
-			dampingX := arm_bone.Phys_scale_damping
-			dampingY := arm_bone.Phys_scale_damping
+		if phys.Scale_damping > 0. {
+			dampingX := phys.Scale_damping
+			dampingY := phys.Scale_damping
 
 			// ratio
-			if arm_bone.Phys_scale_ratio < 0. {
-				dampingY *= 1. - float32(math.Abs(float64(arm_bone.Phys_scale_ratio)))
-			} else if arm_bone.Phys_scale_ratio > 0. {
-				dampingX *= 1. - arm_bone.Phys_scale_ratio
+			if phys.Scale_ratio < 0. {
+				dampingY *= 1. - float32(math.Abs(float64(phys.Scale_ratio)))
+			} else if phys.Scale_ratio > 0. {
+				dampingX *= 1. - phys.Scale_ratio
 			}
 
-			phys_scale.X = interpolate(2, uint(dampingX), phys_scale.X, const_bone.Scale.X, s, e)
-			phys_scale.Y = interpolate(2, uint(dampingY), phys_scale.Y, const_bone.Scale.Y, s, e)
+			phys.Global_scale.X = interpolate(2, uint(dampingX), phys.Global_scale.X, constBone.Scale.X, s, e)
+			phys.Global_scale.Y = interpolate(2, uint(dampingY), phys.Global_scale.Y, constBone.Scale.Y, s, e)
 		}
 
 		// interpolate rotation
-		if arm_bone.Phys_rot_damping > 0. {
-			rot := shortest_angle_delta(arm_bone.Phys_global_rot, const_bone.Rot)
-			arm_bone.Phys_global_rot += rot / arm_bone.Phys_rot_damping
+		if phys.Rot_damping > 0. {
+			rot := shortest_angle_delta(phys.Global_rot, constBone.Rot)
+			phys.Global_rot += rot / phys.Rot_damping
 		}
 
 		// interpolate parent orbit (rot res, bounce, etc)
 		var parent Bone
 		has_parent := false
-		for _, bone := range armature.Constructed_bones {
-			if bone.Id == const_bone.Parent_id {
+		for _, bone := range constructedBones {
+			if bone.Id == constBone.Parent_id {
 				parent = bone
 				has_parent = true
 				break
 			}
 		}
-		if arm_bone.Phys_sway > 0. && has_parent {
+		if phys.Sway > 0. && has_parent {
 			// interpolate to the angle difference between bone and parent
-			diff := normalize(const_bone.Pos.Sub(parent.Pos))
+			diff := normalize(constBone.Pos.Sub(parent.Pos))
 			diff_angle := math.Atan2(float64(diff.Y), float64(diff.X))
-			rest_rot := shortest_angle_delta(arm_bone.Phys_global_orbit, float32(diff_angle))
+			rest_rot := shortest_angle_delta(phys.Global_orbit, float32(diff_angle))
 			// apply bounce
-			if arm_bone.Phys_rot_bounce > 0. && arm_bone.Phys_rot_bounce <= 1. {
-				rest_rot += arm_bone.Phys_global_orbit_vel / (2. - arm_bone.Phys_rot_bounce)
-				arm_bone.Phys_global_orbit_vel = rest_rot
+			if phys.Rot_bounce > 0. && phys.Rot_bounce <= 1. {
+				rest_rot += phys.Global_orbit_vel / (2. - phys.Rot_bounce)
+				phys.Global_orbit_vel = rest_rot
 			}
-			arm_bone.Phys_global_orbit += rest_rot / 10.
+			phys.Global_orbit += rest_rot / 10.
 
 			// swing orbit based on position momentum
-			vel := normalize(arm_bone.Phys_global_pos.Sub(prev_pos))
+			vel := normalize(phys.Global_pos.Sub(prev_pos))
 			angle := math.Atan2(float64(-vel.Y), float64(-vel.X))
-			vel_rot := shortest_angle_delta(arm_bone.Phys_global_orbit, float32(angle))
-			strength := magnitude(arm_bone.Phys_global_pos.Sub(prev_pos)) / 1000.
-			arm_bone.Phys_global_orbit += vel_rot * strength * arm_bone.Phys_sway
+			vel_rot := shortest_angle_delta(phys.Global_orbit, float32(angle))
+			strength := magnitude(phys.Global_pos.Sub(prev_pos)) / 1000.
+			phys.Global_orbit += vel_rot * strength * phys.Sway
 
 			// apply difference in final angle and orbit
-			arm_bone.Phys_global_orbit_diff = float32(diff_angle) - arm_bone.Phys_global_orbit
+			phys.Global_orbit_diff = float32(diff_angle) - phys.Global_orbit
 		}
 	}
 }
@@ -501,27 +511,36 @@ func Construct(armature *Armature) {
 
 	// 1st inheritance pass
 	resetInheritance(armature.Bones, armature.Constructed_bones)
-	inheritance(armature.Constructed_bones, make(map[uint]float32), []Bone{})
+	inheritance(armature.Constructed_bones, make(map[uint]float32), []Physics{})
 
 	// 2nd inheritance pass with IK
-	ikRots := InverseKinematics(armature.Constructed_bones, armature.Ik_root_ids)
-	resetInheritance(armature.Bones, armature.Constructed_bones)
-	inheritance(armature.Constructed_bones, ikRots, []Bone{})
+	var ikRots map[uint]float32
+	if len(armature.Inverse_kinematics) > 0 {
+		ikRots = InverseKinematics(armature.Constructed_bones, armature.Inverse_kinematics)
+		resetInheritance(armature.Bones, armature.Constructed_bones)
+		inheritance(armature.Constructed_bones, ikRots, []Physics{})
+	}
 
 	// 3rd inheritance pass with physics
-	simulatePhysics(armature)
-	resetInheritance(armature.Bones, armature.Constructed_bones)
-	inheritance(armature.Constructed_bones, ikRots, armature.Bones)
+	if len(armature.Physics) > 0 {
+		simulatePhysics(armature.Constructed_bones, armature.Physics)
+		resetInheritance(armature.Bones, armature.Constructed_bones)
+		inheritance(armature.Constructed_bones, ikRots, armature.Physics)
+	}
 
-	ConstructVerts(armature.Constructed_bones)
+	ConstructVerts(armature.Constructed_bones, armature.Visuals)
 }
 
-func ConstructVerts(bones []Bone) {
+func ConstructVerts(bones []Bone, visuals []Visuals) {
 	for b := range bones {
 		bone := &bones[b]
+		if bones[b].Visuals_id == -1 {
+			continue
+		}
+		visual := visuals[bones[b].Visuals_id]
 
-		for v := range bone.Vertices {
-			vert := &bone.Vertices[v]
+		for v := range visual.Vertices {
+			vert := &visual.Vertices[v]
 
 			// reset vertex position
 			vert.Pos = vert.Init_pos
@@ -530,7 +549,7 @@ func ConstructVerts(bones []Bone) {
 			vert.Pos = inheritVert(vert.Pos, *bone)
 		}
 
-		for bi, bind := range bone.Binds {
+		for bi, bind := range visual.Binds {
 			if bind.Bone_id == -1 {
 				continue
 			}
@@ -540,7 +559,7 @@ func ConstructVerts(bones []Bone) {
 			for _, bindVert := range bind.Verts {
 				// non-pathing bind
 				if !bind.Is_path {
-					vert := &bone.Vertices[bindVert.Id]
+					vert := &visual.Vertices[bindVert.Id]
 					endPos := inheritVert(vert.Init_pos, bindBone).Sub(vert.Pos)
 					vert.Pos = vert.Pos.Add(endPos.Mulf(bindVert.Weight))
 					continue
@@ -550,9 +569,9 @@ func ConstructVerts(bones []Bone) {
 
 				// get previous and next bind bone (if they exist)
 				prev := int(math.Max(float64(bi-1), 0))
-				next := int(math.Min(float64(bi+1), float64(len(bone.Binds)-1)))
-				prevBindBone, _ := findBone(bones, bone.Binds[prev].Bone_id)
-				nextBindBone, _ := findBone(bones, bone.Binds[next].Bone_id)
+				next := int(math.Min(float64(bi+1), float64(len(visual.Binds)-1)))
+				prevBindBone, _ := findBone(bones, visual.Binds[prev].Bone_id)
+				nextBindBone, _ := findBone(bones, visual.Binds[next].Bone_id)
 
 				// get normal line along the 3 binds
 				prevDir := bindBone.Pos.Sub(prevBindBone.Pos)
@@ -563,7 +582,7 @@ func ConstructVerts(bones []Bone) {
 				normalAngle := math.Atan2(float64(average.Y), float64(average.X))
 
 				// move vertex along the surface
-				vert := &bone.Vertices[bindVert.Id]
+				vert := &visual.Vertices[bindVert.Id]
 				vert.Pos = vert.Init_pos.Add(bindBone.Pos)
 				rotated := rotate(vert.Pos.Sub(bindBone.Pos), normalAngle)
 				vert.Pos = bindBone.Pos.Add(rotated.Mulf(bindVert.Weight))
@@ -579,79 +598,61 @@ func inheritVert(pos Vec2, bone Bone) Vec2 {
 	return pos
 }
 
-func SetupBoneTextures(bones []Bone, styles []Style) map[uint]Texture {
-	finalTextures := make(map[uint]Texture)
-
-	for _, bone := range bones {
-		for _, style := range styles {
-			found := false
-			// find texture
-			for _, tex := range style.Textures {
-				if tex.Name == bone.Tex {
-					found = true
-					finalTextures[uint(bone.Id)] = tex
-					found = true
-					break
-				}
-			}
-			if found {
-				break
+func GetBoneTexture(texName string, styles []Style) (Texture, error) {
+	for _, style := range styles {
+		for _, tex := range style.Textures {
+			if tex.Name == texName {
+				return tex, nil
 			}
 		}
 	}
-
-	return finalTextures
+	var texture Texture
+	return texture, errors.New("test")
 }
 
-func InverseKinematics(bones []Bone, ik_root_ids []int) map[uint]float32 {
+func InverseKinematics(bones []Bone, inverseKinematics []BoneInverseKinematics) map[uint]float32 {
 	rotMap := make(map[uint]float32)
 
-	for _, root_id := range ik_root_ids {
-		family := bones[root_id]
-
-		if family.Ik_target_id == -1 {
+	for _, family := range inverseKinematics {
+		if family.Target_id == -1 {
 			continue
 		}
 
-		root := bones[family.Ik_bone_ids[0]].Pos
-		target := bones[family.Ik_target_id].Pos
+		root := bones[family.Bone_ids[0]].Pos
+		target := bones[family.Target_id].Pos
 
-		switch family.Ik_mode {
+		switch family.Mode {
 		case "FABRIK":
 			for range 10 {
-				fabrik(family.Ik_bone_ids, bones, target, root)
+				fabrik(family.Bone_ids, bones, target, root)
 			}
 		case "Arc":
-			arc_ik(family.Ik_bone_ids, bones, root, target)
+			arc_ik(family.Bone_ids, bones, root, target)
 		}
 
-		tipPos := bones[family.Ik_bone_ids[len(family.Ik_bone_ids)-1]].Pos
-		for i := len(family.Ik_bone_ids) - 1; i >= 0; i-- {
-			bone := &bones[family.Ik_bone_ids[i]]
-			if i == len(family.Ik_bone_ids)-1 {
-				continue
-			}
-
+		tipPos := bones[family.Bone_ids[len(family.Bone_ids)-1]].Pos
+		for i := len(family.Bone_ids) - 1; i >= 0; i-- {
+			bone := &bones[family.Bone_ids[i]]
 			dir := tipPos.Sub(bone.Pos)
-			bones[family.Ik_bone_ids[i]].Rot = float32(math.Atan2(float64(dir.Y), float64(dir.X)))
+			bones[family.Bone_ids[i]].Rot = float32(math.Atan2(float64(dir.Y), float64(dir.X)))
 			tipPos = bone.Pos
 		}
 
-		jointDir := normalize(bones[family.Ik_bone_ids[1]].Pos.Sub(bones[family.Ik_bone_ids[0]].Pos))
+		jointDir := normalize(bones[family.Bone_ids[1]].Pos.Sub(bones[family.Bone_ids[0]].Pos))
 		baseDir := normalize(target.Sub(root))
 		dir := jointDir.X*baseDir.Y - baseDir.X*jointDir.Y
 		baseAngle := math.Atan2(float64(baseDir.Y), float64(baseDir.X))
 
-		cw := family.Ik_constraint == "Clockwise" && dir > 0
-		ccw := family.Ik_constraint == "CounterClockwise" && dir < 0
+		cw := family.Constraint == "Clockwise" && dir > 0
+		ccw := family.Constraint == "CounterClockwise" && dir < 0
 		if cw || ccw {
-			for _, id := range family.Ik_bone_ids {
+			for _, id := range family.Bone_ids {
 				bones[id].Rot = -bones[id].Rot + float32(baseAngle*2)
 			}
 		}
 
-		for i, boneId := range family.Ik_bone_ids {
-			if i == len(family.Ik_bone_ids)-1 {
+		for i, boneId := range family.Bone_ids {
+			if i == len(family.Bone_ids)-1 {
 				continue
 			}
 			rotMap[uint(boneId)] = bones[boneId].Rot
@@ -746,16 +747,6 @@ func findBone(bones []Bone, id int) (Bone, error) {
 	}
 
 	return bones[0], errors.New("Could not find bone of ID " + strconv.Itoa(id))
-}
-
-func getPrevKeyframe(keyframes []Keyframe, frame int, element string, boneId int) int {
-	prevKf := -1
-	for k, kf := range keyframes {
-		if kf.Frame < frame && kf.Bone_id == boneId && kf.Element == element {
-			prevKf = k
-		}
-	}
-	return prevKf
 }
 
 func interpolateKeyframes(
