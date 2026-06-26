@@ -59,7 +59,7 @@ func normalize(v1 Vec2) Vec2 {
 	return Vec2{X: v1.X / mag, Y: v1.Y / mag}
 }
 
-func rotate(point Vec2, rot float64) Vec2 {
+func RotateVec2(point Vec2, rot float64) Vec2 {
 	cos := float32(math.Cos(rot))
 	sin := float32(math.Sin(rot))
 	return Vec2{
@@ -111,11 +111,14 @@ type BoneInverseKinematics struct {
 }
 
 type Visuals struct {
-	Tex      string
-	Zindex   float32
-	Vertices []Vertex
-	Indices  []int
-	Binds    []Bind
+	Tex         string
+	Zindex      float32
+	Vertices    []Vertex
+	Indices     []int
+	Binds       []Bind
+	Pivot_pos   Vec2
+	Pivot_rot   float32
+	Pivot_scale Vec2
 }
 
 type Physics struct {
@@ -223,24 +226,22 @@ func Animate(armature *Armature, animations []Animation, frames []int, smoothFra
 
 			bone := &armature.Bones[kf.Bone_id]
 
-			c1 := string(kf.Element[0])
-			c2 := string(kf.Element[len(kf.Element)-1])
-			if c1 == "P" && c2 == "X" {
+			if kf.Element == "PositionX" {
 				bone.Pos.X = interpolateKeyframes(bone.Pos.X, kf, nextKf, frames[a], smoothFrames[a])
 			}
-			if c1 == "P" && c2 == "Y" {
+			if kf.Element == "PositionY" {
 				bone.Pos.Y = interpolateKeyframes(bone.Pos.Y, kf, nextKf, frames[a], smoothFrames[a])
 			}
-			if c1 == "R" && c2 == "n" {
+			if kf.Element == "Rotation" {
 				bone.Rot = interpolateKeyframes(bone.Rot, kf, nextKf, frames[a], smoothFrames[a])
 			}
-			if c1 == "S" && c2 == "X" {
+			if kf.Element == "ScaleX" {
 				bone.Scale.X = interpolateKeyframes(bone.Scale.X, kf, nextKf, frames[a], smoothFrames[a])
 			}
-			if c1 == "S" && c2 == "Y" {
+			if kf.Element == "ScaleY" {
 				bone.Scale.Y = interpolateKeyframes(bone.Scale.Y, kf, nextKf, frames[a], smoothFrames[a])
 			}
-			if c1 == "H" && c2 == "n" {
+			if kf.Element == "Hidden" {
 				bone.Hidden = kf.Value == 1
 			}
 
@@ -326,7 +327,7 @@ func inheritance(bones []Bone, ikRots map[uint]float32, physics []Physics) []Bon
 			bone.Scale = bone.Scale.Mul(parent.Scale)
 			bone.Pos = bone.Pos.Mul(parent.Scale)
 
-			bone.Pos = rotate(bone.Pos, float64(orbit_rot))
+			bone.Pos = RotateVec2(bone.Pos, float64(orbit_rot))
 
 			bone.Pos = bone.Pos.Add(parent.Pos)
 		}
@@ -537,7 +538,7 @@ func ConstructVerts(bones []Bone, visuals []Visuals) {
 		if bones[b].Visuals_id == -1 {
 			continue
 		}
-		visual := visuals[bones[b].Visuals_id]
+		visual := visuals[bone.Visuals_id]
 
 		for v := range visual.Vertices {
 			vert := &visual.Vertices[v]
@@ -546,7 +547,7 @@ func ConstructVerts(bones []Bone, visuals []Visuals) {
 			vert.Pos = vert.Init_pos
 
 			// inherit bone's properties into vertex
-			vert.Pos = inheritVert(vert.Pos, *bone)
+			vert.Pos = inheritVert(vert.Pos, *bone, visual)
 		}
 
 		for bi, bind := range visual.Binds {
@@ -560,7 +561,7 @@ func ConstructVerts(bones []Bone, visuals []Visuals) {
 				// non-pathing bind
 				if !bind.Is_path {
 					vert := &visual.Vertices[bindVert.Id]
-					endPos := inheritVert(vert.Init_pos, bindBone).Sub(vert.Pos)
+					endPos := inheritVert(vert.Init_pos, bindBone, visual).Sub(vert.Pos)
 					vert.Pos = vert.Pos.Add(endPos.Mulf(bindVert.Weight))
 					continue
 				}
@@ -584,16 +585,16 @@ func ConstructVerts(bones []Bone, visuals []Visuals) {
 				// move vertex along the surface
 				vert := &visual.Vertices[bindVert.Id]
 				vert.Pos = vert.Init_pos.Add(bindBone.Pos)
-				rotated := rotate(vert.Pos.Sub(bindBone.Pos), normalAngle)
+				rotated := RotateVec2(vert.Pos.Sub(bindBone.Pos), normalAngle)
 				vert.Pos = bindBone.Pos.Add(rotated.Mulf(bindVert.Weight))
 			}
 		}
 	}
 }
 
-func inheritVert(pos Vec2, bone Bone) Vec2 {
-	pos = pos.Mul(bone.Scale)
-	pos = rotate(pos, float64(bone.Rot))
+func inheritVert(pos Vec2, bone Bone, visuals Visuals) Vec2 {
+	pos = pos.Mul(bone.Scale).Mul(visuals.Pivot_scale)
+	pos = RotateVec2(pos, float64(bone.Rot+visuals.Pivot_rot))
 	pos = pos.Add(bone.Pos)
 	return pos
 }
@@ -734,7 +735,7 @@ func arc_ik(bone_ids []int, bones []Bone, root Vec2, target Vec2) {
 			Y: root.Y + (1-peak)*angle*float32(baseMag),
 		}
 
-		rotated := rotate(bones[bone_ids[f]].Pos.Sub(root), baseAngle)
+		rotated := RotateVec2(bones[bone_ids[f]].Pos.Sub(root), baseAngle)
 		bones[bone_ids[f]].Pos = rotated.Add(root)
 	}
 }
@@ -786,10 +787,8 @@ func TimeFrame(animation Animation, time time.Duration, reverse bool, loop bool)
 	return frame
 }
 
-func CheckBoneFlip(bone *Bone, scale Vec2) {
+func IsFacingLeft(scale Vec2) bool {
 	either := scale.X < 0 || scale.Y < 0
 	both := scale.X < 0 && scale.Y < 0
-	if either && !both {
-		bone.Rot = -bone.Rot
-	}
+	return either && !both
 }
